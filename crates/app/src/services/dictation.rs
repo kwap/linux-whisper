@@ -125,29 +125,38 @@ impl DictationService {
     /// focused window via the display-appropriate text injector (xdotool on
     /// X11, wtype on Wayland).  Otherwise, the text is simply copied to the
     /// system clipboard.
+    /// Deliver transcribed text to the user.
+    ///
+    /// Strategy:
+    /// 1. Always copy to clipboard first (so user always has the text).
+    /// 2. If auto_paste is enabled, also try to type it into the focused window.
     pub fn auto_paste(
         config: &AppConfig,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if config.auto_paste {
-            let display_server = display::detect();
-            info!("Auto-pasting via text injection (display: {display_server})");
+        let display_server = display::detect();
+        info!("Display server detected: {display_server}");
 
+        // Always copy to clipboard first — this guarantees the text is available.
+        if let Err(e) = Self::copy_to_clipboard_inner(&display_server, text) {
+            error!("Clipboard copy failed: {e}");
+            // Don't return — still try paste if enabled.
+        }
+
+        if config.auto_paste {
+            info!("Attempting text injection (display: {display_server})");
             let injector = create_injector(&display_server);
 
-            if !injector.is_available() {
-                error!(
-                    "Text injection tool not available for {display_server}; \
-                     falling back to clipboard"
-                );
-                return Self::copy_to_clipboard(text);
+            if injector.is_available() {
+                match injector.inject_text(text) {
+                    Ok(()) => info!("Text injected successfully ({} chars)", text.len()),
+                    Err(e) => error!("Text injection failed: {e} (text is in clipboard)"),
+                }
+            } else {
+                info!("No text injection tool available; text is in clipboard");
             }
-
-            injector.inject_text(text)?;
-            info!("Text injected successfully ({} chars)", text.len());
         } else {
-            info!("auto_paste disabled; copying to clipboard");
-            Self::copy_to_clipboard(text)?;
+            info!("Auto-paste disabled; text copied to clipboard ({} chars)", text.len());
         }
 
         Ok(())
@@ -157,7 +166,14 @@ impl DictationService {
     /// backend for the current display server.
     pub fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
         let display_server = display::detect();
-        let clipboard = create_clipboard(&display_server);
+        Self::copy_to_clipboard_inner(&display_server, text)
+    }
+
+    fn copy_to_clipboard_inner(
+        display_server: &display::DisplayServer,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let clipboard = create_clipboard(display_server);
         clipboard.set_text(text)?;
         info!("Copied {} chars to clipboard (display: {display_server})", text.len());
         Ok(())

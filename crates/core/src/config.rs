@@ -73,7 +73,7 @@ impl Default for AppConfig {
         Self {
             hotkey: "Super+Shift+Space".to_string(),
             auto_paste: true,
-            language: "en".to_string(),
+            language: "auto".to_string(),
             model: "base".to_string(),
             theme: Theme::default(),
             minimize_to_tray: true,
@@ -223,7 +223,7 @@ mod tests {
 
         assert_eq!(cfg.hotkey, "Super+Shift+Space");
         assert!(cfg.auto_paste);
-        assert_eq!(cfg.language, "en");
+        assert_eq!(cfg.language, "auto");
         assert_eq!(cfg.model, "base");
         assert_eq!(cfg.theme, Theme::System);
         assert!(cfg.minimize_to_tray);

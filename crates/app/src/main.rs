@@ -20,6 +20,7 @@ use linux_whisper_whisper::model_registry;
 use linux_whisper_whisper::worker::WhisperWorker;
 
 use services::dictation::DictationService;
+use ui::window::MainWindow;
 
 const APP_ID: &str = "com.linuxwhisper.LinuxWhisper";
 
@@ -178,6 +179,9 @@ fn on_activate(app: &adw::Application, worker: WhisperWorker, tokio_handle: toki
     // State for recording toggle.
     let is_recording = Rc::new(RefCell::new(false));
 
+    // Shared MainWindow — created on first ShowWindow request, reused thereafter.
+    let main_window: Rc<RefCell<Option<MainWindow>>> = Rc::new(RefCell::new(None));
+
     // Poll the action channel from the GTK main loop (~50ms interval).
     let app_clone = app.clone();
     let tokio_handle_clone = tokio_handle.clone();
@@ -194,6 +198,20 @@ fn on_activate(app: &adw::Application, worker: WhisperWorker, tokio_handle: toki
                         &tokio_handle_clone,
                         &tray_handle,
                     );
+                }
+                TrayAction::ShowWindow => {
+                    let mut win_opt = main_window.borrow_mut();
+                    if let Some(ref win) = *win_opt {
+                        win.present();
+                    } else {
+                        let win = MainWindow::new(
+                            &app_clone,
+                            worker_clone.clone(),
+                            tokio_handle_clone.clone(),
+                        );
+                        win.present();
+                        *win_opt = Some(win);
+                    }
                 }
                 TrayAction::Preferences => {
                     ui::preferences::show_preferences(&tokio_handle_clone);

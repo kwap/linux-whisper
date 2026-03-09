@@ -102,10 +102,14 @@ impl CpalCapture {
     }
 
     /// List only physical/hardware input devices, filtering out ALSA virtual
-    /// devices that clutter the device list.
+    /// devices and returning clean, human-readable names.
     pub fn list_physical_devices(&self) -> Result<Vec<String>, CaptureError> {
         let all = self.list_devices()?;
-        let physical: Vec<String> = all.into_iter().filter(|n| is_physical_device(n)).collect();
+        let physical: Vec<String> = all
+            .into_iter()
+            .filter(|n| is_physical_device(n))
+            .map(|n| prettify_device_name(&n))
+            .collect();
         debug!("Filtered to {} physical input device(s)", physical.len());
         Ok(physical)
     }
@@ -134,9 +138,13 @@ fn is_physical_device(name: &str) -> bool {
         "default",
         "lavrate",
         "speexrate",
+        "samplerate",
+        "speex",
         "upmix",
         "vdownmix",
         "usbstream",
+        "pipewire",
+        "plughw:",
     ];
 
     for prefix in VIRTUAL_PREFIXES {
@@ -155,6 +163,78 @@ fn is_physical_device(name: &str) -> bool {
     }
 
     true
+}
+
+/// Convert a raw ALSA device name into a clean, human-readable display name.
+///
+/// Examples:
+///   "plughw:CARD=Audio,DEV=0"  → "USB Audio"  (via /proc/asound lookup)
+///   "hw:CARD=BRIO,DEV=0"       → "Logitech BRIO"
+///   "Blue Yeti"                → "Blue Yeti"
+fn prettify_device_name(raw: &str) -> String {
+    // If the name contains CARD=, try to resolve via /proc/asound/cards.
+    if let Some(card_name) = extract_card_id(raw) {
+        if let Some(pretty) = lookup_card_name(&card_name) {
+            return pretty;
+        }
+    }
+    // Already a decent name — just title-case it.
+    title_case(raw)
+}
+
+/// Extract the CARD= identifier from an ALSA device string.
+/// "plughw:CARD=Audio,DEV=0" → Some("Audio")
+fn extract_card_id(name: &str) -> Option<String> {
+    let start = name.find("CARD=")?;
+    let rest = &name[start + 5..];
+    let end = rest.find(',').unwrap_or(rest.len());
+    Some(rest[..end].to_string())
+}
+
+/// Look up a card's human name from /proc/asound/cards.
+///
+/// Format of /proc/asound/cards:
+///  1 [Audio          ]: USB-Audio - USB Audio
+///                        Generic USB Audio at usb-...
+///  3 [BRIO           ]: USB-Audio - Logitech BRIO
+fn lookup_card_name(card_id: &str) -> Option<String> {
+    let contents = std::fs::read_to_string("/proc/asound/cards").ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        // Match lines like:  1 [Audio     ]: USB-Audio - USB Audio
+        if let Some(bracket_start) = trimmed.find('[') {
+            if let Some(bracket_end) = trimmed.find(']') {
+                let id = trimmed[bracket_start + 1..bracket_end].trim();
+                if id == card_id {
+                    // Grab the friendly name after " - ".
+                    if let Some(dash_pos) = trimmed.find(" - ") {
+                        let friendly = trimmed[dash_pos + 3..].trim();
+                        if !friendly.is_empty() {
+                            return Some(friendly.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Simple title-case: capitalize first letter of each word.
+fn title_case(s: &str) -> String {
+    s.split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    format!("{}{}", upper, chars.as_str())
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl AudioCapture for CpalCapture {
@@ -404,9 +484,13 @@ mod tests {
         assert!(!is_physical_device("default"));
         assert!(!is_physical_device("lavrate"));
         assert!(!is_physical_device("speexrate"));
+        assert!(!is_physical_device("samplerate"));
+        assert!(!is_physical_device("speex"));
         assert!(!is_physical_device("upmix"));
         assert!(!is_physical_device("vdownmix"));
         assert!(!is_physical_device("usbstream:CARD=PCH"));
+        assert!(!is_physical_device("pipewire"));
+        assert!(!is_physical_device("plughw:CARD=Audio,DEV=0"));
     }
 
     #[test]
@@ -421,5 +505,47 @@ mod tests {
         assert!(!is_physical_device("PULSE"));
         assert!(!is_physical_device("Dmix:CARD=PCH"));
         assert!(!is_physical_device("Some MONITOR Device"));
+        assert!(!is_physical_device("Pipewire"));
+    }
+
+    // -- prettify_device_name tests -----------------------------------------
+
+    #[test]
+    fn prettify_passthrough_clean_names() {
+        assert_eq!(prettify_device_name("Blue Yeti"), "Blue Yeti");
+        assert_eq!(prettify_device_name("Scarlett 2i2"), "Scarlett 2i2");
+    }
+
+    #[test]
+    fn prettify_title_cases_lowercase() {
+        assert_eq!(prettify_device_name("some device"), "Some Device");
+    }
+
+    #[test]
+    fn extract_card_id_plughw() {
+        assert_eq!(
+            extract_card_id("plughw:CARD=Audio,DEV=0"),
+            Some("Audio".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_card_id_hw() {
+        assert_eq!(
+            extract_card_id("hw:CARD=BRIO,DEV=0"),
+            Some("BRIO".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_card_id_no_card() {
+        assert_eq!(extract_card_id("pipewire"), None);
+    }
+
+    #[test]
+    fn title_case_works() {
+        assert_eq!(title_case("hello world"), "Hello World");
+        assert_eq!(title_case("USB audio"), "USB Audio");
+        assert_eq!(title_case(""), "");
     }
 }

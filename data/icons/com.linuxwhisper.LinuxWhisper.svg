@@ -1,10 +1,31 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <circle cx="64" cy="64" r="56" fill="#1c71d8" />
-  <!-- Microphone body -->
-  <rect x="52" y="28" width="24" height="44" rx="12" fill="white" />
-  <!-- Microphone stand arc -->
-  <path d="M40 64 a24 24 0 0 0 48 0" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" />
-  <!-- Microphone stand -->
-  <line x1="64" y1="88" x2="64" y2="100" stroke="white" stroke-width="4" stroke-linecap="round" />
-  <line x1="52" y1="100" x2="76" y2="100" stroke="white" stroke-width="4" stroke-linecap="round" />
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a3a5c"/>
+      <stop offset="100%" stop-color="#0f2440"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Deep blue rounded square background -->
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="url(#bg)"/>
+
+  <!-- Microphone body - golden yellow -->
+  <rect x="48" y="14" width="32" height="52" rx="16" fill="#FFD54F"/>
+
+  <!-- Mic grille lines -->
+  <line x1="54" y1="28" x2="74" y2="28" stroke="#E6BE3A" stroke-width="1.5" opacity="0.5"/>
+  <line x1="54" y1="36" x2="74" y2="36" stroke="#E6BE3A" stroke-width="1.5" opacity="0.5"/>
+  <line x1="54" y1="44" x2="74" y2="44" stroke="#E6BE3A" stroke-width="1.5" opacity="0.5"/>
+  <line x1="54" y1="52" x2="74" y2="52" stroke="#E6BE3A" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Microphone arc -->
+  <path d="M34 58 a30 30 0 0 0 60 0" fill="none" stroke="#FFD54F" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Stand -->
+  <line x1="64" y1="88" x2="64" y2="102" stroke="#FFD54F" stroke-width="5" stroke-linecap="round"/>
+  <line x1="48" y1="102" x2="80" y2="102" stroke="#FFD54F" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Sound waves -->
+  <path d="M86 32 q12 16 0 32" fill="none" stroke="#FFD54F" stroke-width="3.5" stroke-linecap="round" opacity="0.6"/>
+  <path d="M96 24 q16 24 0 48" fill="none" stroke="#FFD54F" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
 </svg>

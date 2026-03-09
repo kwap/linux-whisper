@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::display::DisplayServer;
 
@@ -129,12 +129,28 @@ impl TextInjector for YdotoolInjector {
             ));
         }
 
-        let output = Command::new("ydotool")
-            .arg("type")
-            .arg("--")
-            .arg(text)
-            .output()
-            .map_err(|e| InjectError::InjectFailed(format!("failed to run ydotool: {e}")))?;
+        // ydotool type reads from stdin via --file -
+        // --key-delay 12 (default) avoids dropped keystrokes
+        let mut child = Command::new("ydotool")
+            .args(["type", "--file", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| InjectError::InjectFailed(format!("failed to spawn ydotool: {e}")))?;
+
+        if let Some(ref mut stdin) = child.stdin {
+            use std::io::Write;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| InjectError::InjectFailed(format!("failed to write to ydotool: {e}")))?;
+        }
+        // Close stdin so ydotool knows input is done.
+        drop(child.stdin.take());
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| InjectError::InjectFailed(format!("ydotool wait error: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

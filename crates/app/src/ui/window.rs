@@ -9,10 +9,21 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
+use std::time::Duration;
 
-use linux_whisper_core::model::Segment;
+use tracing::{error, info};
+
+use linux_whisper_core::config::AppConfig;
+use linux_whisper_core::export::ExportFormat;
+use linux_whisper_core::model::{Segment, Transcript};
 use linux_whisper_i18n::{fl, LANGUAGE_LOADER};
 use linux_whisper_whisper::model_registry;
+use linux_whisper_whisper::worker::WhisperWorker;
+
+use crate::services::dictation::DictationService;
+use crate::services::transcription::TranscriptionService;
 
 use super::about;
 
@@ -34,7 +45,11 @@ pub struct MainWindow {
 
 impl MainWindow {
     /// Build and return a fully wired-up main window attached to `app`.
-    pub fn new(app: &adw::Application) -> Self {
+    pub fn new(
+        app: &adw::Application,
+        worker: WhisperWorker,
+        tokio_handle: tokio::runtime::Handle,
+    ) -> Self {
         // ── App menu actions ───────────────────────────────────────────
         let preferences_action = gio::SimpleAction::new("preferences", None);
         let about_action = gio::SimpleAction::new("about", None);
@@ -229,9 +244,9 @@ impl MainWindow {
 
         // ── Connect menu actions ──────────────────────────────────────
         {
+            let tokio_handle = tokio_handle.clone();
             preferences_action.connect_activate(move |_, _| {
-                // Preferences now needs a tokio handle; in tray mode this is
-                // handled by the tray action handler. This path is unused.
+                crate::ui::preferences::show_preferences(&tokio_handle);
             });
         }
         {
@@ -247,7 +262,7 @@ impl MainWindow {
         }
 
         // ── Connect widget signals ────────────────────────────────────
-        main_window.connect_signals();
+        main_window.connect_signals(worker, tokio_handle);
 
         main_window
     }
@@ -260,9 +275,6 @@ impl MainWindow {
     }
 
     /// Append a single segment row to the transcript list.
-    ///
-    /// Each segment is displayed as an `adw::ActionRow` with the transcribed
-    /// text as the title and the formatted time range as the subtitle.
     pub fn add_segment_row(&self, segment: &Segment) {
         let subtitle = format!(
             "[{} - {}]",
@@ -290,13 +302,6 @@ impl MainWindow {
     }
 
     /// Update the record button to reflect whether a recording is in progress.
-    ///
-    /// * `recording == true` — label switches to "Stop", icon becomes
-    ///   `media-playback-stop-symbolic`, and the button gets the
-    ///   `destructive-action` style class.
-    /// * `recording == false` — label reverts to "Record", icon becomes
-    ///   `media-record-symbolic`, and the button gets the `suggested-action`
-    ///   style class.
     pub fn set_recording_state(&self, recording: bool) {
         if recording {
             self.record_button
@@ -316,21 +321,19 @@ impl MainWindow {
 
     // ── Internal signal wiring ──────────────────────────────────────────
 
-    fn connect_signals(&self) {
-        // Recording state toggle stored in a local `RefCell` so the closure
-        // can flip it on each click.
-        let is_recording = Rc::new(RefCell::new(false));
+    fn connect_signals(&self, worker: WhisperWorker, tokio_handle: tokio::runtime::Handle) {
+        // Shared transcript state — updated after transcription, used by
+        // export and copy-all.
+        let transcript_state: Rc<RefCell<Option<Transcript>>> = Rc::new(RefCell::new(None));
 
-        // Record button — toggle recording visual state.
+        // Record button — visual toggle only (recording is handled via tray).
         {
+            let is_recording = Rc::new(RefCell::new(false));
             let record_button = self.record_button.clone();
-            let is_recording = Rc::clone(&is_recording);
             self.record_button.connect_clicked(move |_| {
                 let mut recording = is_recording.borrow_mut();
                 *recording = !*recording;
-                let now_recording = *recording;
-                // Apply visual state change.
-                if now_recording {
+                if *recording {
                     record_button.set_label(&fl!(LANGUAGE_LOADER, "stop"));
                     record_button.set_icon_name("media-playback-stop-symbolic");
                     record_button.remove_css_class("suggested-action");
@@ -344,20 +347,30 @@ impl MainWindow {
             });
         }
 
-        // Clear button — remove all transcript rows.
+        // Clear button — remove all transcript rows and clear state.
         {
             let transcript_list = self.transcript_list.clone();
+            let transcript_state = Rc::clone(&transcript_state);
+            let status_label = self.status_label.clone();
             self.clear_button.connect_clicked(move |_| {
                 while let Some(row) = transcript_list.row_at_index(0) {
                     transcript_list.remove(&row);
                 }
+                *transcript_state.borrow_mut() = None;
+                status_label.set_label("Ready");
             });
         }
 
-        // Open File button — launch file chooser for audio files.
+        // Open File button — file chooser → transcribe → display segments.
         {
             let window = self.window.clone();
+            let transcript_list = self.transcript_list.clone();
             let toast_overlay = self.toast_overlay.clone();
+            let status_label = self.status_label.clone();
+            let transcript_state = Rc::clone(&transcript_state);
+            let worker = worker.clone();
+            let tokio_handle = tokio_handle.clone();
+
             self.open_button.connect_clicked(move |_| {
                 let audio_filter = gtk::FileFilter::new();
                 audio_filter.set_name(Some("Audio files"));
@@ -379,19 +392,106 @@ impl MainWindow {
                     .modal(true)
                     .build();
 
+                let transcript_list = transcript_list.clone();
                 let toast_overlay = toast_overlay.clone();
+                let status_label = status_label.clone();
+                let transcript_state = Rc::clone(&transcript_state);
+                let worker = worker.clone();
+                let tokio_handle = tokio_handle.clone();
+
                 dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
                     match result {
                         Ok(file) => {
                             if let Some(path) = file.path() {
-                                let name = path
+                                let file_name = path
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())
                                     .unwrap_or_else(|| "file".to_string());
-                                let toast = adw::Toast::new(
-                                    &format!("Opened: {name}"),
+
+                                status_label.set_label(&format!("Transcribing {file_name}..."));
+
+                                // Spawn transcription on tokio.
+                                let svc = TranscriptionService::new(Arc::new(worker.clone()));
+                                let config = AppConfig::load();
+                                let language = match config.language.as_str() {
+                                    "auto" => None,
+                                    lang => Some(lang.to_string()),
+                                };
+
+                                let (result_tx, result_rx) =
+                                    std_mpsc::channel::<Result<Transcript, String>>();
+
+                                let path_clone = path.clone();
+                                tokio_handle.spawn(async move {
+                                    let result = svc.transcribe_file(&path_clone, language).await;
+                                    let _ = result_tx.send(
+                                        result.map_err(|e| e.to_string()),
+                                    );
+                                });
+
+                                // Poll for result on GTK thread.
+                                let transcript_list = transcript_list.clone();
+                                let toast_overlay = toast_overlay.clone();
+                                let status_label = status_label.clone();
+                                let transcript_state = Rc::clone(&transcript_state);
+
+                                glib::timeout_add_local(
+                                    Duration::from_millis(100),
+                                    move || match result_rx.try_recv() {
+                                        Ok(Ok(transcript)) => {
+                                            // Clear existing rows.
+                                            while let Some(row) =
+                                                transcript_list.row_at_index(0)
+                                            {
+                                                transcript_list.remove(&row);
+                                            }
+
+                                            // Display segments.
+                                            let seg_count = transcript.segment_count();
+                                            for seg in &transcript.segments {
+                                                let subtitle = format!(
+                                                    "[{} - {}]",
+                                                    format_timestamp(seg.start),
+                                                    format_timestamp(seg.end),
+                                                );
+                                                let row = adw::ActionRow::builder()
+                                                    .title(&seg.text)
+                                                    .subtitle(&subtitle)
+                                                    .build();
+                                                transcript_list.append(&row);
+                                            }
+
+                                            status_label.set_label(&format!(
+                                                "{file_name} — {seg_count} segment(s), {:.1}s",
+                                                transcript.duration,
+                                            ));
+
+                                            *transcript_state.borrow_mut() = Some(transcript);
+
+                                            let toast = adw::Toast::new(&format!(
+                                                "Transcribed: {file_name}"
+                                            ));
+                                            toast_overlay.add_toast(toast);
+
+                                            glib::ControlFlow::Break
+                                        }
+                                        Ok(Err(e)) => {
+                                            error!("File transcription failed: {e}");
+                                            status_label.set_label("Transcription failed");
+                                            let toast =
+                                                adw::Toast::new(&format!("Error: {e}"));
+                                            toast_overlay.add_toast(toast);
+                                            glib::ControlFlow::Break
+                                        }
+                                        Err(std_mpsc::TryRecvError::Empty) => {
+                                            glib::ControlFlow::Continue
+                                        }
+                                        Err(std_mpsc::TryRecvError::Disconnected) => {
+                                            status_label.set_label("Transcription failed");
+                                            glib::ControlFlow::Break
+                                        }
+                                    },
                                 );
-                                toast_overlay.add_toast(toast);
                             }
                         }
                         Err(_) => {
@@ -402,12 +502,34 @@ impl MainWindow {
             });
         }
 
-        // Copy All button — placeholder toast.
+        // Copy All button — copy full transcript text to clipboard.
         {
             let toast_overlay = self.toast_overlay.clone();
+            let transcript_state = Rc::clone(&transcript_state);
             self.copy_button.connect_clicked(move |_| {
-                let toast = adw::Toast::new("Copied to clipboard");
-                toast_overlay.add_toast(toast);
+                let state = transcript_state.borrow();
+                if let Some(ref transcript) = *state {
+                    let text = transcript.full_text();
+                    if text.is_empty() {
+                        let toast = adw::Toast::new("No text to copy");
+                        toast_overlay.add_toast(toast);
+                        return;
+                    }
+                    match DictationService::copy_to_clipboard(&text) {
+                        Ok(()) => {
+                            let toast = adw::Toast::new("Copied to clipboard");
+                            toast_overlay.add_toast(toast);
+                        }
+                        Err(e) => {
+                            error!("Clipboard copy failed: {e}");
+                            let toast = adw::Toast::new("Failed to copy to clipboard");
+                            toast_overlay.add_toast(toast);
+                        }
+                    }
+                } else {
+                    let toast = adw::Toast::new("No transcript to copy");
+                    toast_overlay.add_toast(toast);
+                }
             });
         }
 
@@ -425,7 +547,6 @@ impl MainWindow {
                     if query.is_empty() {
                         return true;
                     }
-                    // Try to downcast to adw::ActionRow to read its title.
                     if let Some(action_row) = row.downcast_ref::<adw::ActionRow>() {
                         let title = action_row.title().to_string().to_lowercase();
                         let subtitle = action_row
@@ -449,14 +570,14 @@ impl MainWindow {
 
 // ── Export popover builder ───────────────────────────────────────────────
 
-/// Build the export format selection popover shown when the user clicks the
-/// Export menu button. Contains four rows for the supported formats.
+/// Build the export format selection popover. When a format row is activated,
+/// it opens a file-save dialog and writes the exported transcript to disk.
 fn build_export_popover() -> gtk::Popover {
     let formats = [
-        ("Plain Text (.txt)", "TXT"),
-        ("SubRip (.srt)", "SRT"),
-        ("WebVTT (.vtt)", "VTT"),
-        ("CSV (.csv)", "CSV"),
+        ("Plain Text (.txt)", "txt"),
+        ("SubRip (.srt)", "srt"),
+        ("WebVTT (.vtt)", "vtt"),
+        ("CSV (.csv)", "csv"),
     ];
 
     let list_box = gtk::ListBox::builder()
@@ -468,7 +589,7 @@ fn build_export_popover() -> gtk::Popover {
         .child(&list_box)
         .build();
 
-    for (label, _format_tag) in &formats {
+    for (label, _ext) in &formats {
         let row = gtk::ListBoxRow::builder().build();
         let row_label = gtk::Label::builder()
             .label(*label)
@@ -482,40 +603,204 @@ fn build_export_popover() -> gtk::Popover {
         list_box.append(&row);
     }
 
-    // Connect row activation to dismiss the popover and show a toast.
-    // We cannot show the toast here because we don't have a reference to the
-    // overlay; instead we use the popover's parent chain at activation time.
+    // Row activation → dismiss popover, open save dialog, write export.
     {
         let popover_weak = popover.downgrade();
         list_box.connect_row_activated(move |_list_box, row| {
             let index = row.index();
-            let format_name = match index {
-                0 => "TXT",
-                1 => "SRT",
-                2 => "VTT",
-                3 => "CSV",
-                _ => "Unknown",
+            let (format, ext, format_label) = match index {
+                0 => (ExportFormat::Txt, "txt", "TXT"),
+                1 => (ExportFormat::Srt, "srt", "SRT"),
+                2 => (ExportFormat::Vtt, "vtt", "VTT"),
+                3 => (ExportFormat::Csv, "csv", "CSV"),
+                _ => return,
             };
 
-            // Dismiss the popover first.
             if let Some(popover) = popover_weak.upgrade() {
                 popover.popdown();
 
-                // Walk the widget tree to find the ToastOverlay and show a toast.
+                // Walk the widget tree to find the ToastOverlay and the
+                // ApplicationWindow.
+                let mut toast_overlay_opt: Option<adw::ToastOverlay> = None;
+                let mut app_window_opt: Option<adw::ApplicationWindow> = None;
+
                 let mut ancestor = popover.parent();
                 while let Some(widget) = ancestor {
-                    if let Some(overlay) = widget.downcast_ref::<adw::ToastOverlay>() {
-                        let toast = adw::Toast::new(&format!("Exported as {format_name}"));
-                        overlay.add_toast(toast);
-                        return;
+                    if toast_overlay_opt.is_none() {
+                        if let Some(overlay) = widget.downcast_ref::<adw::ToastOverlay>() {
+                            toast_overlay_opt = Some(overlay.clone());
+                        }
+                    }
+                    if app_window_opt.is_none() {
+                        if let Some(win) = widget.downcast_ref::<adw::ApplicationWindow>() {
+                            app_window_opt = Some(win.clone());
+                        }
                     }
                     ancestor = widget.parent();
                 }
+
+                let Some(toast_overlay) = toast_overlay_opt else {
+                    return;
+                };
+                let Some(app_window) = app_window_opt else {
+                    return;
+                };
+
+                // Find the transcript state via the transcript_list in the
+                // widget tree. We export whatever rows are currently displayed.
+                // Build a Transcript from the ActionRows in the list.
+                let transcript = collect_transcript_from_list(&app_window);
+                if transcript.segments.is_empty() {
+                    let toast = adw::Toast::new("No transcript to export");
+                    toast_overlay.add_toast(toast);
+                    return;
+                }
+
+                // Generate the export content.
+                let content = match TranscriptionService::export_transcript(&transcript, format) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Export failed: {e}");
+                        let toast = adw::Toast::new(&format!("Export failed: {e}"));
+                        toast_overlay.add_toast(toast);
+                        return;
+                    }
+                };
+
+                // Open a save dialog.
+                let file_filter = gtk::FileFilter::new();
+                file_filter.set_name(Some(format_label));
+                gtk::FileFilter::add_suffix(&file_filter, ext);
+
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&file_filter);
+
+                let default_name = format!("transcript.{ext}");
+                let dialog = gtk::FileDialog::builder()
+                    .title(&format!("Export as {format_label}"))
+                    .initial_name(&default_name)
+                    .filters(&filters)
+                    .modal(true)
+                    .build();
+
+                let toast_overlay = toast_overlay.clone();
+                dialog.save(
+                    Some(&app_window),
+                    gio::Cancellable::NONE,
+                    move |result| {
+                        match result {
+                            Ok(file) => {
+                                if let Some(path) = file.path() {
+                                    match TranscriptionService::save_export(&content, &path) {
+                                        Ok(()) => {
+                                            let name = path
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            info!("Exported to {}", path.display());
+                                            let toast = adw::Toast::new(&format!(
+                                                "Exported: {name}"
+                                            ));
+                                            toast_overlay.add_toast(toast);
+                                        }
+                                        Err(e) => {
+                                            error!("Save failed: {e}");
+                                            let toast = adw::Toast::new(&format!(
+                                                "Save failed: {e}"
+                                            ));
+                                            toast_overlay.add_toast(toast);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // User cancelled.
+                            }
+                        }
+                    },
+                );
             }
         });
     }
 
     popover
+}
+
+/// Collect transcript segments from the ListBox rows currently in the window.
+/// This walks the widget tree starting from the ApplicationWindow to find
+/// the ListBox with class "boxed-list", then reads ActionRow titles/subtitles.
+fn collect_transcript_from_list(window: &adw::ApplicationWindow) -> Transcript {
+    use linux_whisper_core::model::TranscriptSource;
+
+    let mut transcript = Transcript::new(
+        "Transcription",
+        None,
+        "",
+        TranscriptSource::File { path: String::new() },
+    );
+
+    // Find the ListBox by walking children.
+    fn find_list_box(widget: &impl IsA<gtk::Widget>) -> Option<gtk::ListBox> {
+        let widget = widget.upcast_ref::<gtk::Widget>();
+        if let Some(lb) = widget.downcast_ref::<gtk::ListBox>() {
+            if lb.css_classes().iter().any(|c| c == "boxed-list") {
+                return Some(lb.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Some(lb) = find_list_box(&c) {
+                return Some(lb);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    let Some(list_box) = find_list_box(window) else {
+        return transcript;
+    };
+
+    let mut i = 0;
+    while let Some(row) = list_box.row_at_index(i) {
+        if let Some(action_row) = row.downcast_ref::<adw::ActionRow>() {
+            let text = action_row.title().to_string();
+            let subtitle = action_row
+                .subtitle()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+
+            // Parse timestamps from subtitle like "[00:01.5 - 00:03.2]"
+            let (start, end) = parse_timestamp_range(&subtitle);
+            transcript.add_segment(Segment::new(start, end, text));
+        }
+        i += 1;
+    }
+
+    transcript
+}
+
+/// Parse a timestamp range like "[00:01.5 - 00:03.2]" into (start_secs, end_secs).
+fn parse_timestamp_range(s: &str) -> (f64, f64) {
+    let s = s.trim_matches(|c: char| c == '[' || c == ']' || c.is_whitespace());
+    let parts: Vec<&str> = s.split(" - ").collect();
+    if parts.len() == 2 {
+        (parse_timestamp(parts[0]), parse_timestamp(parts[1]))
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Parse a timestamp like "01:05.5" into seconds.
+fn parse_timestamp(s: &str) -> f64 {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() == 2 {
+        let mins: f64 = parts[0].parse().unwrap_or(0.0);
+        let secs: f64 = parts[1].parse().unwrap_or(0.0);
+        mins * 60.0 + secs
+    } else {
+        0.0
+    }
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────
@@ -551,5 +836,18 @@ mod tests {
     #[test]
     fn format_timestamp_exact_minute() {
         assert_eq!(format_timestamp(120.0), "02:00.0");
+    }
+
+    #[test]
+    fn parse_timestamp_basic() {
+        assert!((parse_timestamp("01:05.5") - 65.5).abs() < 0.01);
+        assert!((parse_timestamp("00:00.0") - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_timestamp_range_basic() {
+        let (start, end) = parse_timestamp_range("[00:01.5 - 00:03.2]");
+        assert!((start - 1.5).abs() < 0.01);
+        assert!((end - 3.2).abs() < 0.01);
     }
 }
