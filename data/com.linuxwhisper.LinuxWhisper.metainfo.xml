@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.linuxwhisper.LinuxWhisper</id>
+
+  <name>Linux Whisper</name>
+  <summary>Local, privacy-focused speech-to-text transcription and dictation</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Linux Whisper is a local, privacy-focused dictation and transcription
+      application for Linux. It uses OpenAI's Whisper models running entirely
+      on your device — no data ever leaves your machine.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>System-wide hotkey-triggered dictation with auto-paste</li>
+      <li>Audio file transcription (WAV, MP3, OGG, M4A, FLAC, Opus)</li>
+      <li>Multiple Whisper model sizes from Tiny to Large</li>
+      <li>Export to TXT, SRT, VTT, and CSV formats</li>
+      <li>Full-text search across transcripts</li>
+      <li>Support for 50+ languages</li>
+      <li>Native GTK4/libadwaita interface following GNOME HIG</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.linuxwhisper.LinuxWhisper.desktop</launchable>
+
+  <url type="homepage">https://github.com/linuxwhisper/linux-whisper</url>
+  <url type="bugtracker">https://github.com/linuxwhisper/linux-whisper/issues</url>
+
+  <developer id="com.linuxwhisper">
+    <name>Linux Whisper Contributors</name>
+  </developer>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-03-09">
+      <description>
+        <p>Initial release of Linux Whisper.</p>
+      </description>
+    </release>
+  </releases>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+</component>
