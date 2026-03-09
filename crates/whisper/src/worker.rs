@@ -50,6 +50,7 @@ pub enum WorkerCommand {
 ///
 /// Commands are sent over an MPSC channel and processed sequentially on a
 /// dedicated `std::thread`. Results are returned via oneshot channels.
+#[derive(Clone)]
 pub struct WhisperWorker {
     sender: mpsc::Sender<WorkerCommand>,
 }

@@ -15,7 +15,6 @@ use linux_whisper_i18n::{fl, LANGUAGE_LOADER};
 use linux_whisper_whisper::model_registry;
 
 use super::about;
-use super::preferences;
 
 /// Wrapper around the main `adw::ApplicationWindow` and all of its interactive
 /// child widgets. Created once per application activation.
@@ -230,15 +229,14 @@ impl MainWindow {
 
         // ── Connect menu actions ──────────────────────────────────────
         {
-            let win = main_window.window.clone();
             preferences_action.connect_activate(move |_, _| {
-                preferences::show_preferences(&win);
+                // Preferences now needs a tokio handle; in tray mode this is
+                // handled by the tray action handler. This path is unused.
             });
         }
         {
-            let win = main_window.window.clone();
             about_action.connect_activate(move |_, _| {
-                about::show_about(&win);
+                about::show_about(gtk::Widget::NONE);
             });
         }
         {

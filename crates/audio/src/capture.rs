@@ -95,6 +95,66 @@ impl CpalCapture {
             device_channels: 0,
         })
     }
+
+    /// Returns the name of the default input device, if available.
+    pub fn default_device_name(&self) -> Option<String> {
+        self.host.default_input_device().and_then(|d| d.name().ok())
+    }
+
+    /// List only physical/hardware input devices, filtering out ALSA virtual
+    /// devices that clutter the device list.
+    pub fn list_physical_devices(&self) -> Result<Vec<String>, CaptureError> {
+        let all = self.list_devices()?;
+        let physical: Vec<String> = all.into_iter().filter(|n| is_physical_device(n)).collect();
+        debug!("Filtered to {} physical input device(s)", physical.len());
+        Ok(physical)
+    }
+}
+
+/// Returns `true` if the device name looks like a real hardware device rather
+/// than an ALSA virtual/plugin device.
+fn is_physical_device(name: &str) -> bool {
+    let lower = name.to_lowercase();
+
+    // Reject names starting with known ALSA virtual prefixes.
+    const VIRTUAL_PREFIXES: &[&str] = &[
+        "dmix",
+        "dsnoop",
+        "surround",
+        "iec958",
+        "spdif",
+        "null",
+        "oss",
+        "pulse",
+        "jack",
+        "hdmi",
+        "sysdefault",
+        "front",
+        "hw:",
+        "default",
+        "lavrate",
+        "speexrate",
+        "upmix",
+        "vdownmix",
+        "usbstream",
+    ];
+
+    for prefix in VIRTUAL_PREFIXES {
+        if lower.starts_with(prefix) {
+            return false;
+        }
+    }
+
+    // Reject names containing virtual substrings.
+    const VIRTUAL_SUBSTRINGS: &[&str] = &["monitor", "loopback", "asym"];
+
+    for substr in VIRTUAL_SUBSTRINGS {
+        if lower.contains(substr) {
+            return false;
+        }
+    }
+
+    true
 }
 
 impl AudioCapture for CpalCapture {
@@ -314,5 +374,52 @@ mod tests {
     #[test]
     fn audio_buffer_target_rate() {
         assert_eq!(AudioBuffer::TARGET_SAMPLE_RATE, 16_000);
+    }
+
+    // -- is_physical_device tests -------------------------------------------
+
+    #[test]
+    fn physical_device_accepts_real_hardware() {
+        assert!(is_physical_device("Blue Yeti"));
+        assert!(is_physical_device("Scarlett 2i2"));
+        assert!(is_physical_device("Built-in Audio Analog Stereo"));
+        assert!(is_physical_device("USB Audio Device"));
+    }
+
+    #[test]
+    fn physical_device_rejects_alsa_virtual_prefixes() {
+        assert!(!is_physical_device("dmix:CARD=PCH"));
+        assert!(!is_physical_device("dsnoop:CARD=PCH"));
+        assert!(!is_physical_device("surround51:CARD=PCH"));
+        assert!(!is_physical_device("iec958:CARD=PCH"));
+        assert!(!is_physical_device("spdif:CARD=PCH"));
+        assert!(!is_physical_device("null"));
+        assert!(!is_physical_device("oss"));
+        assert!(!is_physical_device("pulse"));
+        assert!(!is_physical_device("jack"));
+        assert!(!is_physical_device("hdmi:CARD=NVidia"));
+        assert!(!is_physical_device("sysdefault:CARD=PCH"));
+        assert!(!is_physical_device("front:CARD=PCH"));
+        assert!(!is_physical_device("hw:0,0"));
+        assert!(!is_physical_device("default"));
+        assert!(!is_physical_device("lavrate"));
+        assert!(!is_physical_device("speexrate"));
+        assert!(!is_physical_device("upmix"));
+        assert!(!is_physical_device("vdownmix"));
+        assert!(!is_physical_device("usbstream:CARD=PCH"));
+    }
+
+    #[test]
+    fn physical_device_rejects_virtual_substrings() {
+        assert!(!is_physical_device("PipeWire Monitor of Built-in"));
+        assert!(!is_physical_device("ALSA Loopback"));
+        assert!(!is_physical_device("asym:CARD=PCH"));
+    }
+
+    #[test]
+    fn physical_device_case_insensitive() {
+        assert!(!is_physical_device("PULSE"));
+        assert!(!is_physical_device("Dmix:CARD=PCH"));
+        assert!(!is_physical_device("Some MONITOR Device"));
     }
 }

@@ -11,7 +11,7 @@ use tracing::{error, info};
 use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
 use linux_whisper_core::config::AppConfig;
 use linux_whisper_core::model::Transcript;
-use linux_whisper_platform::clipboard::{ArboardClipboard, ClipboardManager};
+use linux_whisper_platform::clipboard::create_clipboard;
 use linux_whisper_platform::display;
 use linux_whisper_platform::text_inject::create_injector;
 use linux_whisper_whisper::engine::TranscribeOptions;
@@ -153,11 +153,13 @@ impl DictationService {
         Ok(())
     }
 
-    /// Copy the given text to the system clipboard via [`ArboardClipboard`].
+    /// Copy the given text to the system clipboard using the best available
+    /// backend for the current display server.
     pub fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let clipboard = ArboardClipboard::new()?;
+        let display_server = display::detect();
+        let clipboard = create_clipboard(&display_server);
         clipboard.set_text(text)?;
-        info!("Copied {} chars to clipboard", text.len());
+        info!("Copied {} chars to clipboard (display: {display_server})", text.len());
         Ok(())
     }
 }

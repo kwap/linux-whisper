@@ -108,6 +108,50 @@ impl TextInjector for WtypeInjector {
     }
 }
 
+/// Text injector using `ydotool` (display-server-agnostic, works on both
+/// X11 and Wayland via the ydotoold daemon and /dev/uinput).
+pub struct YdotoolInjector {
+    available: bool,
+}
+
+impl YdotoolInjector {
+    pub fn new() -> Self {
+        let available = which("ydotool");
+        Self { available }
+    }
+}
+
+impl TextInjector for YdotoolInjector {
+    fn inject_text(&self, text: &str) -> Result<(), InjectError> {
+        if !self.available {
+            return Err(InjectError::ToolNotFound(
+                "ydotool is not installed".to_string(),
+            ));
+        }
+
+        let output = Command::new("ydotool")
+            .arg("type")
+            .arg("--")
+            .arg(text)
+            .output()
+            .map_err(|e| InjectError::InjectFailed(format!("failed to run ydotool: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(InjectError::InjectFailed(format!(
+                "ydotool exited with {}: {}",
+                output.status, stderr
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn is_available(&self) -> bool {
+        self.available
+    }
+}
+
 /// Check if a binary is available on `$PATH`.
 fn which(binary: &str) -> bool {
     Command::new("which")
@@ -118,12 +162,32 @@ fn which(binary: &str) -> bool {
 }
 
 /// Create the appropriate text injector for the detected display server.
+///
+/// On Wayland: tries wtype, then ydotool.
+/// On X11: tries xdotool.
+/// On Unknown: tries ydotool, then xdotool.
 pub fn create_injector(display: &DisplayServer) -> Box<dyn TextInjector + Send> {
     match display {
-        DisplayServer::Wayland => Box::new(WtypeInjector::new()),
+        DisplayServer::Wayland => {
+            let wtype = WtypeInjector::new();
+            if wtype.is_available() {
+                return Box::new(wtype);
+            }
+            let ydotool = YdotoolInjector::new();
+            if ydotool.is_available() {
+                tracing::info!("wtype not found; using ydotool for Wayland text injection");
+                return Box::new(ydotool);
+            }
+            tracing::warn!("no Wayland text injection tool found (tried wtype, ydotool)");
+            Box::new(wtype) // return unavailable wtype so caller gets a clear error
+        }
         DisplayServer::X11 => Box::new(XdotoolInjector::new()),
         DisplayServer::Unknown => {
-            // Fall back to xdotool — it is the more common tool.
+            let ydotool = YdotoolInjector::new();
+            if ydotool.is_available() {
+                tracing::info!("unknown display server; using ydotool");
+                return Box::new(ydotool);
+            }
             tracing::warn!("unknown display server; falling back to xdotool");
             Box::new(XdotoolInjector::new())
         }
@@ -224,6 +288,14 @@ mod tests {
     #[test]
     fn wtype_injector_not_available_returns_error() {
         let injector = WtypeInjector { available: false };
+        assert!(!injector.is_available());
+        let err = injector.inject_text("test").unwrap_err();
+        assert!(matches!(err, InjectError::ToolNotFound(_)));
+    }
+
+    #[test]
+    fn ydotool_injector_not_available_returns_error() {
+        let injector = YdotoolInjector { available: false };
         assert!(!injector.is_available());
         let err = injector.inject_text("test").unwrap_err();
         assert!(matches!(err, InjectError::ToolNotFound(_)));

@@ -1,15 +1,23 @@
+use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
+
 use adw::prelude::*;
+use gtk::glib;
+use linux_whisper_audio::capture::CpalCapture;
 use linux_whisper_core::config::AppConfig;
 use linux_whisper_core::language::Language;
+use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
+use tracing::{error, info};
 
 /// Display the application preferences window.
-pub fn show_preferences(parent: &adw::ApplicationWindow) {
-    let config = AppConfig::default();
+///
+/// `tokio_handle` is used to spawn async model downloads.
+pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
+    let config = AppConfig::load();
 
     let prefs_window = adw::PreferencesWindow::builder()
         .title("Preferences")
-        .transient_for(parent)
         .modal(true)
         .build();
 
@@ -48,7 +56,6 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
         .model(&language_model)
         .build();
 
-    // Select the language matching the current config.
     let selected_index = languages
         .iter()
         .position(|l| l.code() == config.language)
@@ -56,6 +63,24 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
     language_row.set_selected(selected_index as u32);
 
     dictation_group.add(&language_row);
+
+    // -- Audio device -------------------------------------------------------
+    let device_names = CpalCapture::new()
+        .ok()
+        .and_then(|c| c.list_physical_devices().ok())
+        .unwrap_or_default();
+
+    let device_model = gtk::StringList::new(
+        &device_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+
+    let device_row = adw::ComboRow::builder()
+        .title("Audio Input Device")
+        .subtitle("Currently uses the system default device")
+        .model(&device_model)
+        .build();
+
+    dictation_group.add(&device_row);
     general_page.add(&dictation_group);
 
     // -- Appearance group ---------------------------------------------------
@@ -78,12 +103,6 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
 
     appearance_group.add(&theme_row);
 
-    let minimize_row = adw::SwitchRow::builder()
-        .title("Minimize to system tray")
-        .active(config.minimize_to_tray)
-        .build();
-    appearance_group.add(&minimize_row);
-
     let confidence_row = adw::SwitchRow::builder()
         .title("Show confidence scores")
         .active(config.show_confidence)
@@ -91,6 +110,17 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
     appearance_group.add(&confidence_row);
 
     general_page.add(&appearance_group);
+
+    // -- Keyboard shortcuts note --------------------------------------------
+    let shortcuts_group = adw::PreferencesGroup::builder()
+        .title("Keyboard Shortcuts")
+        .description(
+            "Global hotkeys require access to /dev/input devices.\n\
+             To enable: sudo usermod -aG input $USER && reboot",
+        )
+        .build();
+    general_page.add(&shortcuts_group);
+
     prefs_window.add(&general_page);
 
     // -----------------------------------------------------------------------
@@ -101,8 +131,57 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
         .icon_name("folder-download-symbolic")
         .build();
 
+    let mgr = ModelManager::new(AppConfig::models_dir());
+
+    // -- Active model selector ----------------------------------------------
+    let selector_group = adw::PreferencesGroup::builder()
+        .title("Active Model")
+        .build();
+
+    let downloaded = mgr.list_downloaded();
+    let downloaded_names: Vec<&str> = downloaded.iter().map(|m| m.name).collect();
+    let model_list = gtk::StringList::new(&downloaded_names);
+
+    let model_row = adw::ComboRow::builder()
+        .title("Whisper Model")
+        .subtitle("Model used for transcription")
+        .model(&model_list)
+        .build();
+
+    // Pre-select the configured model.
+    let model_selected_index = downloaded_names
+        .iter()
+        .position(|n| *n == config.model)
+        .unwrap_or(0);
+    model_row.set_selected(model_selected_index as u32);
+
+    // Persist model choice on change.
+    {
+        let config_clone = config.clone();
+        let names = downloaded_names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        model_row.connect_notify(Some("selected"), move |row, _| {
+            let idx = row.selected() as usize;
+            if let Some(name) = names.get(idx) {
+                let mut cfg = config_clone.clone();
+                cfg.model = name.clone();
+                if let Err(e) = cfg.save() {
+                    error!("Failed to save model preference: {e}");
+                }
+            }
+        });
+    }
+
+    if downloaded.is_empty() {
+        model_row.set_subtitle("Download a model below first");
+        model_row.set_sensitive(false);
+    }
+
+    selector_group.add(&model_row);
+    models_page.add(&selector_group);
+
+    // -- All models list ----------------------------------------------------
     let models_group = adw::PreferencesGroup::builder()
-        .title("Whisper Models")
+        .title("Available Models")
         .build();
 
     for model in model_registry::all_models() {
@@ -111,13 +190,111 @@ pub fn show_preferences(parent: &adw::ApplicationWindow) {
             .subtitle(&format_bytes(model.size_bytes))
             .build();
 
-        let download_btn = gtk::Button::builder()
-            .label("Download")
-            .valign(gtk::Align::Center)
-            .css_classes(["suggested-action"])
-            .build();
+        if mgr.is_downloaded(model) {
+            let check = gtk::Image::from_icon_name("object-select-symbolic");
+            check.set_valign(gtk::Align::Center);
+            let label = gtk::Label::builder()
+                .label("Downloaded")
+                .valign(gtk::Align::Center)
+                .css_classes(["dim-label"])
+                .build();
+            row.add_suffix(&label);
+            row.add_suffix(&check);
+        } else {
+            let progress_bar = gtk::ProgressBar::builder()
+                .valign(gtk::Align::Center)
+                .hexpand(false)
+                .visible(false)
+                .build();
+            progress_bar.set_width_request(120);
 
-        row.add_suffix(&download_btn);
+            let download_btn = gtk::Button::builder()
+                .label("Download")
+                .valign(gtk::Align::Center)
+                .css_classes(["suggested-action"])
+                .build();
+
+            let model_clone = model.clone();
+            let handle = tokio_handle.clone();
+            let btn_ref = download_btn.clone();
+            let bar_ref = progress_bar.clone();
+            let row_ref = row.clone();
+
+            download_btn.connect_clicked(move |_| {
+                btn_ref.set_sensitive(false);
+                btn_ref.set_label("Downloading…");
+                bar_ref.set_visible(true);
+
+                let model = model_clone.clone();
+                let bar = bar_ref.clone();
+                let btn = btn_ref.clone();
+                let row = row_ref.clone();
+
+                // Channel to send progress updates from tokio to GTK thread.
+                // None signals completion, Some(fraction) is progress.
+                let (prog_tx, prog_rx) = std_mpsc::channel::<Option<f64>>();
+
+                handle.spawn(async move {
+                    let mgr = ModelManager::new(AppConfig::models_dir());
+                    let tx = prog_tx.clone();
+                    let progress_cb = Box::new(move |downloaded: u64, total: u64| {
+                        if total > 0 {
+                            let fraction = downloaded as f64 / total as f64;
+                            let _ = tx.send(Some(fraction));
+                        }
+                    });
+
+                    match mgr.download(&model, Some(progress_cb)).await {
+                        Ok(path) => {
+                            info!("Model '{}' downloaded to {}", model.name, path.display());
+                        }
+                        Err(e) => {
+                            error!("Model download failed: {e}");
+                        }
+                    }
+                    let _ = prog_tx.send(None); // signals completion
+                });
+
+                // Poll for progress updates from the GTK main loop.
+                glib::timeout_add_local(Duration::from_millis(100), move || {
+                    loop {
+                        match prog_rx.try_recv() {
+                            Ok(Some(fraction)) => {
+                                bar.set_fraction(fraction);
+                            }
+                            Ok(None) => {
+                                // Download finished — replace button with checkmark.
+                                bar.set_visible(false);
+                                btn.set_visible(false);
+                                let check =
+                                    gtk::Image::from_icon_name("object-select-symbolic");
+                                check.set_valign(gtk::Align::Center);
+                                let label = gtk::Label::builder()
+                                    .label("Downloaded")
+                                    .valign(gtk::Align::Center)
+                                    .css_classes(["dim-label"])
+                                    .build();
+                                row.add_suffix(&label);
+                                row.add_suffix(&check);
+                                return glib::ControlFlow::Break;
+                            }
+                            Err(std_mpsc::TryRecvError::Empty) => break,
+                            Err(std_mpsc::TryRecvError::Disconnected) => {
+                                bar.set_visible(false);
+                                btn.set_label("Failed");
+                                btn.set_sensitive(false);
+                                return glib::ControlFlow::Break;
+                            }
+                        }
+                    }
+                    glib::ControlFlow::Continue
+                });
+            });
+
+            row.add_suffix(&progress_bar);
+            row.add_suffix(&download_btn);
+        }
+
         models_group.add(&row);
     }
 

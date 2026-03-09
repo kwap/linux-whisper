@@ -2,7 +2,9 @@ use adw::prelude::*;
 use gtk::License;
 
 /// Display the "About" dialog for the application.
-pub fn show_about(parent: &adw::ApplicationWindow) {
+///
+/// When `parent` is `None` the dialog is presented without a transient parent.
+pub fn show_about(parent: Option<&impl IsA<gtk::Widget>>) {
     let dialog = adw::AboutDialog::builder()
         .application_name("Linux Whisper")
         .application_icon("com.linuxwhisper.LinuxWhisper")
@@ -13,5 +15,5 @@ pub fn show_about(parent: &adw::ApplicationWindow) {
         .comments("Local, privacy-focused speech-to-text transcription and dictation.")
         .build();
 
-    dialog.present(Some(parent));
+    dialog.present(parent);
 }

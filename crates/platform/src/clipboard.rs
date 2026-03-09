@@ -1,3 +1,8 @@
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+use crate::display::DisplayServer;
+
 /// Errors that can occur during clipboard operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
@@ -64,6 +69,108 @@ impl ClipboardManager for ArboardClipboard {
     }
 }
 
+/// Clipboard manager using `wl-copy` / `wl-paste` from the `wl-clipboard`
+/// package. This avoids the Wayland issue where arboard's clipboard content
+/// disappears as soon as the setting process exits or drops the handle.
+pub struct WlClipboard {
+    _private: (),
+}
+
+impl WlClipboard {
+    /// Create a new `WlClipboard`. Returns `Err` if `wl-copy` is not on `$PATH`.
+    pub fn new() -> Result<Self, ClipboardError> {
+        let available = Command::new("which")
+            .arg("wl-copy")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !available {
+            return Err(ClipboardError::AccessError(
+                "wl-copy not found — install wl-clipboard".to_string(),
+            ));
+        }
+        Ok(Self { _private: () })
+    }
+}
+
+impl ClipboardManager for WlClipboard {
+    fn get_text(&self) -> Result<String, ClipboardError> {
+        let output = Command::new("wl-paste")
+            .arg("--no-newline")
+            .output()
+            .map_err(|e| ClipboardError::AccessError(format!("failed to run wl-paste: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ClipboardError::AccessError(format!(
+                "wl-paste failed: {stderr}"
+            )));
+        }
+
+        String::from_utf8(output.stdout)
+            .map_err(|e| ClipboardError::AccessError(format!("invalid UTF-8 from wl-paste: {e}")))
+    }
+
+    fn set_text(&self, text: &str) -> Result<(), ClipboardError> {
+        let mut child = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| ClipboardError::SetError(format!("failed to spawn wl-copy: {e}")))?;
+
+        if let Some(ref mut stdin) = child.stdin {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| ClipboardError::SetError(format!("failed to write to wl-copy: {e}")))?;
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| ClipboardError::SetError(format!("wl-copy wait error: {e}")))?;
+
+        if !status.success() {
+            return Err(ClipboardError::SetError(format!(
+                "wl-copy exited with {status}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Create the best available clipboard backend for the given display server.
+///
+/// On Wayland: prefers `WlClipboard` (wl-copy/wl-paste), falls back to arboard.
+/// On X11 / Unknown: uses arboard.
+pub fn create_clipboard(display: &DisplayServer) -> Box<dyn ClipboardManager + Send> {
+    match display {
+        DisplayServer::Wayland => {
+            if let Ok(wl) = WlClipboard::new() {
+                tracing::info!("Using wl-clipboard for Wayland clipboard");
+                return Box::new(wl);
+            }
+            tracing::warn!(
+                "wl-clipboard not available; falling back to arboard (clipboard may not persist)"
+            );
+            match ArboardClipboard::new() {
+                Ok(ab) => Box::new(ab),
+                Err(e) => {
+                    tracing::error!("arboard fallback also failed: {e}");
+                    // Return a WlClipboard that will fail on use — better error message.
+                    Box::new(WlClipboard { _private: () })
+                }
+            }
+        }
+        _ => match ArboardClipboard::new() {
+            Ok(ab) => Box::new(ab),
+            Err(e) => {
+                tracing::error!("arboard clipboard failed: {e}");
+                Box::new(WlClipboard { _private: () })
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +230,13 @@ mod tests {
 
         let err = ClipboardError::SetError("write failed".into());
         assert_eq!(err.to_string(), "clipboard set error: write failed");
+    }
+
+    #[test]
+    fn create_clipboard_does_not_panic() {
+        // Smoke test — the factory should never panic regardless of display.
+        let _ = create_clipboard(&DisplayServer::Wayland);
+        let _ = create_clipboard(&DisplayServer::X11);
+        let _ = create_clipboard(&DisplayServer::Unknown);
     }
 }

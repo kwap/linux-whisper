@@ -83,6 +83,61 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    // -- Load / Save --------------------------------------------------------
+
+    /// Load configuration from the TOML file at [`config_path()`].
+    ///
+    /// If the file does not exist or cannot be read, returns sensible defaults.
+    pub fn load() -> Self {
+        let path = Self::config_path();
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match Self::from_toml(&contents) {
+                Ok(cfg) => {
+                    tracing::info!("Loaded config from {}", path.display());
+                    cfg
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse config at {}: {e}; using defaults",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            Err(_) => {
+                tracing::info!(
+                    "No config file at {}; using defaults",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
+    }
+
+    /// Save this configuration to the TOML file at [`config_path()`].
+    ///
+    /// Creates the parent directory if it does not exist.
+    pub fn save(&self) -> Result<(), ConfigError> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ConfigError::SerializeError(format!(
+                    "failed to create config dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let toml_str = self.to_toml()?;
+        std::fs::write(&path, &toml_str).map_err(|e| {
+            ConfigError::SerializeError(format!(
+                "failed to write config to {}: {e}",
+                path.display()
+            ))
+        })?;
+        tracing::info!("Saved config to {}", path.display());
+        Ok(())
+    }
+
     // -- XDG-compliant directory helpers -------------------------------------
 
     /// Returns the configuration directory for the application.
@@ -336,6 +391,54 @@ mod tests {
             let toml_str = cfg.to_toml().expect("serialize");
             let restored = AppConfig::from_toml(&toml_str).expect("deserialize");
             assert_eq!(restored.theme, theme, "round-trip failed for {theme:?}");
+        }
+    }
+
+    #[test]
+    fn load_returns_defaults_when_no_file() {
+        // Point config to a nonexistent directory.
+        let key = "XDG_CONFIG_HOME";
+        let prev = std::env::var(key).ok();
+
+        let tmp = std::env::temp_dir().join("lw_test_load_nofile");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var(key, &tmp);
+
+        let cfg = AppConfig::load();
+        assert_eq!(cfg, AppConfig::default());
+
+        // Restore.
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let key = "XDG_CONFIG_HOME";
+        let prev = std::env::var(key).ok();
+
+        let tmp = std::env::temp_dir().join("lw_test_save_load");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var(key, &tmp);
+
+        let cfg = AppConfig {
+            model: "small".to_string(),
+            language: "de".to_string(),
+            ..AppConfig::default()
+        };
+
+        cfg.save().expect("save should succeed");
+        let loaded = AppConfig::load();
+        assert_eq!(loaded.model, "small");
+        assert_eq!(loaded.language, "de");
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp);
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
         }
     }
 

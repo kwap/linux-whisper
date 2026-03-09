@@ -1,3 +1,13 @@
+use ksni::menu::{StandardItem, MenuItem};
+use ksni::{ToolTip, TrayMethods};
+use tokio::sync::mpsc;
+
+/// Re-export the ksni Handle type for use by the app crate.
+pub type TrayHandle = ksni::Handle<LinuxWhisperTray>;
+
+/// Re-export the ksni Error type for use by the app crate.
+pub type TrayError = ksni::Error;
+
 /// Visual state of the system tray icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayState {
@@ -6,143 +16,127 @@ pub enum TrayState {
     Transcribing,
 }
 
-/// Actions that can be triggered from the tray menu.
+/// Actions that can be triggered from the tray menu or left-click.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     ToggleRecording,
-    ShowWindow,
     Preferences,
+    About,
     Quit,
 }
 
-/// Trait for managing the system tray icon and menu.
-#[cfg_attr(test, mockall::automock)]
-pub trait TrayManager: Send {
-    /// Update the visual state of the tray icon.
-    fn set_state(&mut self, state: TrayState);
-
-    /// Update the tray icon tooltip text.
-    fn set_tooltip(&mut self, tooltip: &str);
-
-    /// Returns `true` if the tray icon is currently visible.
-    fn is_visible(&self) -> bool;
+/// The ksni tray implementation for Linux Whisper.
+pub struct LinuxWhisperTray {
+    /// Whether the tray is currently in recording state.
+    pub recording: bool,
+    /// Status text shown in the tooltip description.
+    pub status_text: String,
+    action_tx: mpsc::UnboundedSender<TrayAction>,
 }
 
-/// System tray manager backed by the `ksni` crate.
-///
-/// This is a stub implementation. A fully functional implementation requires a
-/// running D-Bus session and a desktop environment that supports the
-/// StatusNotifierItem specification (KDE, GNOME with an extension, etc.).
-pub struct KsniTray {
-    state: TrayState,
-    tooltip: String,
-    visible: bool,
-}
+impl ksni::Tray for LinuxWhisperTray {
+    fn id(&self) -> String {
+        "linux-whisper".into()
+    }
 
-impl KsniTray {
-    /// Create a new `KsniTray` instance.
-    ///
-    /// The tray starts in `Idle` state and is not visible until a desktop
-    /// session registers it.
-    pub fn new() -> Self {
-        Self {
-            state: TrayState::Idle,
-            tooltip: String::from("Linux Whisper"),
-            visible: false,
+    fn title(&self) -> String {
+        "Linux Whisper".into()
+    }
+
+    fn icon_name(&self) -> String {
+        if self.recording {
+            "media-record-symbolic".into()
+        } else {
+            "audio-input-microphone-symbolic".into()
         }
     }
 
-    /// Get the current tray state.
-    pub fn state(&self) -> TrayState {
-        self.state
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: "Linux Whisper".into(),
+            description: self.status_text.clone(),
+            ..Default::default()
+        }
     }
 
-    /// Get the current tooltip text.
-    pub fn tooltip(&self) -> &str {
-        &self.tooltip
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.action_tx.send(TrayAction::ToggleRecording);
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        let record_label = if self.recording {
+            "Stop Recording"
+        } else {
+            "Record"
+        };
+        let record_icon = if self.recording {
+            "media-playback-stop-symbolic"
+        } else {
+            "media-record-symbolic"
+        };
+
+        vec![
+            StandardItem {
+                label: record_label.into(),
+                icon_name: record_icon.into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.action_tx.send(TrayAction::ToggleRecording);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Preferences…".into(),
+                icon_name: "preferences-other-symbolic".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.action_tx.send(TrayAction::Preferences);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "About".into(),
+                icon_name: "help-about-symbolic".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.action_tx.send(TrayAction::About);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Quit".into(),
+                icon_name: "application-exit-symbolic".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.action_tx.send(TrayAction::Quit);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        ]
     }
 }
 
-impl TrayManager for KsniTray {
-    fn set_state(&mut self, state: TrayState) {
-        self.state = state;
-        tracing::debug!("tray state changed to {:?}", state);
-    }
-
-    fn set_tooltip(&mut self, tooltip: &str) {
-        self.tooltip = tooltip.to_string();
-        tracing::debug!("tray tooltip set to {:?}", tooltip);
-    }
-
-    fn is_visible(&self) -> bool {
-        self.visible
-    }
+/// Spawn the system tray icon on the tokio runtime.
+///
+/// Returns a handle that can be used to update the tray state (icon, tooltip).
+/// The `action_tx` sender is used to communicate tray actions back to the GTK
+/// main loop.
+pub async fn spawn_tray(
+    action_tx: mpsc::UnboundedSender<TrayAction>,
+) -> Result<ksni::Handle<LinuxWhisperTray>, ksni::Error> {
+    let tray = LinuxWhisperTray {
+        recording: false,
+        status_text: "Ready".into(),
+        action_tx,
+    };
+    tray.spawn().await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ksni_tray_initial_state() {
-        let tray = KsniTray::new();
-        assert_eq!(tray.state(), TrayState::Idle);
-        assert_eq!(tray.tooltip(), "Linux Whisper");
-        assert!(!tray.is_visible());
-    }
-
-    #[test]
-    fn ksni_tray_set_state() {
-        let mut tray = KsniTray::new();
-        tray.set_state(TrayState::Recording);
-        assert_eq!(tray.state(), TrayState::Recording);
-
-        tray.set_state(TrayState::Transcribing);
-        assert_eq!(tray.state(), TrayState::Transcribing);
-
-        tray.set_state(TrayState::Idle);
-        assert_eq!(tray.state(), TrayState::Idle);
-    }
-
-    #[test]
-    fn ksni_tray_set_tooltip() {
-        let mut tray = KsniTray::new();
-        tray.set_tooltip("Recording...");
-        assert_eq!(tray.tooltip(), "Recording...");
-    }
-
-    #[test]
-    fn mock_tray_manager_set_state() {
-        let mut mock = MockTrayManager::new();
-
-        mock.expect_set_state()
-            .withf(|state: &TrayState| *state == TrayState::Recording)
-            .times(1)
-            .return_const(());
-
-        mock.set_state(TrayState::Recording);
-    }
-
-    #[test]
-    fn mock_tray_manager_set_tooltip() {
-        let mut mock = MockTrayManager::new();
-
-        mock.expect_set_tooltip()
-            .withf(|tooltip: &str| tooltip == "Transcribing...")
-            .times(1)
-            .return_const(());
-
-        mock.set_tooltip("Transcribing...");
-    }
-
-    #[test]
-    fn mock_tray_manager_is_visible() {
-        let mut mock = MockTrayManager::new();
-
-        mock.expect_is_visible().times(1).returning(|| true);
-
-        assert!(mock.is_visible());
-    }
 
     #[test]
     fn tray_state_debug() {
@@ -154,8 +148,8 @@ mod tests {
     #[test]
     fn tray_action_debug() {
         assert_eq!(format!("{:?}", TrayAction::ToggleRecording), "ToggleRecording");
-        assert_eq!(format!("{:?}", TrayAction::ShowWindow), "ShowWindow");
         assert_eq!(format!("{:?}", TrayAction::Preferences), "Preferences");
+        assert_eq!(format!("{:?}", TrayAction::About), "About");
         assert_eq!(format!("{:?}", TrayAction::Quit), "Quit");
     }
 
@@ -169,5 +163,95 @@ mod tests {
     fn tray_action_equality() {
         assert_eq!(TrayAction::Quit, TrayAction::Quit);
         assert_ne!(TrayAction::Quit, TrayAction::Preferences);
+    }
+
+    #[test]
+    fn tray_impl_id() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        assert_eq!(tray.id(), "linux-whisper");
+    }
+
+    #[test]
+    fn tray_impl_icon_name_idle() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        assert_eq!(tray.icon_name(), "audio-input-microphone-symbolic");
+    }
+
+    #[test]
+    fn tray_impl_icon_name_recording() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: true,
+            status_text: "Recording...".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        assert_eq!(tray.icon_name(), "media-record-symbolic");
+    }
+
+    #[test]
+    fn tray_impl_title() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        assert_eq!(tray.title(), "Linux Whisper");
+    }
+
+    #[test]
+    fn tray_impl_tooltip() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        let tip = tray.tool_tip();
+        assert_eq!(tip.title, "Linux Whisper");
+        assert_eq!(tip.description, "Ready");
+    }
+
+    #[test]
+    fn tray_activate_sends_toggle() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        tray.activate(0, 0);
+        let action = rx.try_recv().unwrap();
+        assert_eq!(action, TrayAction::ToggleRecording);
+    }
+
+    #[test]
+    fn tray_menu_has_expected_items() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tray = LinuxWhisperTray {
+            recording: false,
+            status_text: "Ready".into(),
+            action_tx: tx,
+        };
+        use ksni::Tray;
+        let menu = tray.menu();
+        // Record, Separator, Preferences, About, Separator, Quit = 6 items
+        assert_eq!(menu.len(), 6);
     }
 }
