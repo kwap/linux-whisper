@@ -1,0 +1,14 @@
+[package]
+name = "linux-whisper-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+linux-whisper-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+cpal = "0.15"
+symphonia = { version = "0.5", features = ["mp3", "isomp4", "ogg", "wav", "vorbis", "aac"] }
+
+[dev-dependencies]
+mockall = { workspace = true }

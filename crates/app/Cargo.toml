@@ -1,0 +1,22 @@
+[package]
+name = "linux-whisper-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "linux-whisper"
+path = "src/main.rs"
+
+[dependencies]
+linux-whisper-core = { workspace = true }
+linux-whisper-audio = { workspace = true }
+linux-whisper-whisper = { workspace = true }
+linux-whisper-platform = { workspace = true }
+linux-whisper-i18n = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }

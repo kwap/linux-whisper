@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:goodsnooze.gumroad.com)",
+      "WebSearch",
+      "WebFetch(domain:aihungry.com)",
+      "WebFetch(domain:catherinepope.com)",
+      "WebFetch(domain:fltmag.com)",
+      "WebFetch(domain:www.todayonmac.com)",
+      "WebFetch(domain:docs.rs)"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+app-name = Linux Whisper
+record = Record
+stop = Stop
+transcribe = Transcribe
+export = Export
+copy-all = Copy All
+clear = Clear
+search-placeholder = Search transcripts...
+drop-files = Drop files here to transcribe
+model-select = Model
+preferences = Preferences
+about = About
+quit = Quit

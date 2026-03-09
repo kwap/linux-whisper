@@ -1,0 +1,15 @@
+[package]
+name = "linux-whisper-platform"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+linux-whisper-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+arboard = "3"
+ksni = "0.3"
+
+[dev-dependencies]
+mockall = { workspace = true }

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Linux Whisper
+Comment=Local speech-to-text transcription and dictation
+Exec=linux-whisper
+Icon=com.linuxwhisper.LinuxWhisper
+Terminal=false
+Type=Application
+Categories=Audio;Utility;
+Keywords=whisper;transcription;dictation;speech;voice;
+StartupNotify=true
