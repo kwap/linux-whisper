@@ -43,16 +43,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy lints
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --no-default-features -- -D warnings
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --no-default-features
 
       - name: Run library tests
-        run: cargo test --workspace --lib
+        run: cargo test --workspace --lib --no-default-features
 
       - name: Run binary tests
-        run: cargo test --bin linux-whisper -p linux-whisper-app
+        run: cargo test --bin linux-whisper -p linux-whisper-app --no-default-features
 
       - name: Validate Flatpak manifest syntax
         run: python3 -c "import yaml; yaml.safe_load(open('com.linuxwhisper.LinuxWhisper.yml'))"

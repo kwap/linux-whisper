@@ -43,12 +43,12 @@ jobs:
           restore-keys: ${{ runner.os }}-release-
 
       - name: Build release binary
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --no-default-features
 
       - name: Run tests
         run: |
-          cargo test --workspace --lib
-          cargo test --bin linux-whisper -p linux-whisper-app
+          cargo test --workspace --lib --no-default-features
+          cargo test --bin linux-whisper -p linux-whisper-app --no-default-features
 
       - name: Extract version
         id: version
@@ -147,7 +147,7 @@ jobs:
           restore-keys: ${{ runner.os }}-release-
 
       - name: Build release binary
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --no-default-features
 
       - name: Extract version
         id: version
