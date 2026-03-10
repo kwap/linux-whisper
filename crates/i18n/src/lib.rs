@@ -96,18 +96,15 @@ mod tests {
     }
 
     #[test]
-    fn fl_macro_returns_expected_value() {
-        // Reset to English so the assertion is deterministic.
+    fn fl_macro_returns_locale_values() {
+        // Tests run in parallel sharing the global LANGUAGE_LOADER, so we
+        // test both locales in a single test to avoid race conditions.
         set_locale("en-US");
-        let value = fl!(LANGUAGE_LOADER, "record");
-        assert_eq!(value, "Record");
-    }
+        assert_eq!(fl!(LANGUAGE_LOADER, "record"), "Record");
 
-    #[test]
-    fn fl_macro_returns_spanish_value() {
         set_locale("es");
-        let value = fl!(LANGUAGE_LOADER, "record");
-        assert_eq!(value, "Grabar");
+        assert_eq!(fl!(LANGUAGE_LOADER, "record"), "Grabar");
+
         // Reset back to English.
         set_locale("en-US");
     }

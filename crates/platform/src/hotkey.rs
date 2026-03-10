@@ -422,7 +422,7 @@ pub fn check_input_group_membership() -> bool {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.len() >= 4 && parts[0] == "input" {
                 let members: Vec<&str> = parts[3].split(',').collect();
-                if members.iter().any(|m| *m == username) {
+                if members.iter().any(|m| m.trim() == username) {
                     return true;
                 }
             }

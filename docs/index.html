@@ -403,7 +403,7 @@ footer {
       Local, privacy-focused speech-to-text for Linux.<br>
       <em>No cloud. No tracking. Just whisper.</em><span class="cursor"></span>
     </p>
-    <span class="version">v0.9.0</span>
+    <span class="version">v0.9.5</span>
     <div style="margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap;">
       <a href="https://github.com/piotrkwapin/linux-whisper/actions/workflows/ci.yml"><img src="https://github.com/piotrkwapin/linux-whisper/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
       <a href="https://github.com/piotrkwapin/linux-whisper/releases/latest"><img src="https://img.shields.io/github/v/release/piotrkwapin/linux-whisper?label=release" alt="Latest Release"></a>
@@ -607,6 +607,39 @@ footer {
 <span class="prompt">$</span> <span class="cmd">flatpak-builder --user --install --force-clean build-dir com.linuxwhisper.LinuxWhisper.yml</span></pre>
     </div>
     <p style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--comment);">Note: Flatpak build requires generating <code>cargo-sources.json</code> first. See the repo README for details.</p>
+  </section>
+
+  <!-- Security -->
+  <section id="security">
+    <h2 class="section-header">Security Audit</h2>
+    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Linux Whisper has undergone a comprehensive security audit across all six crates and the CI/CD pipeline. The codebase is clean and safe to distribute as a binary.</p>
+    <div class="features-grid">
+      <div class="feature">
+        <div class="feature-title">Zero Unsafe Code</div>
+        <div class="feature-desc">No <code>unsafe</code> blocks in the entire codebase. All FFI interactions go through safe whisper-rs wrapper bindings.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">No Data Exfiltration</div>
+        <div class="feature-desc">No telemetry, analytics, or tracking. The only network calls are HTTPS model downloads from HuggingFace. Your transcriptions never leave your machine.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">SHA-256 Integrity Verification</div>
+        <div class="feature-desc">Every model download is verified against known SHA-256 hashes from the official HuggingFace repository. Corrupt or tampered files are rejected.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">No Command Injection</div>
+        <div class="feature-desc">External tools (xdotool, wtype, ydotool, wl-copy) are invoked with safe argument passing and stdin piping. No shell interpolation of user input.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Not a Keylogger</div>
+        <div class="feature-desc">The evdev hotkey listener only tracks the configured key combo. It does not capture, log, or transmit any other keystrokes.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Pinned Supply Chain</div>
+        <div class="feature-desc">All CI/CD GitHub Actions and build tools are pinned to specific commit hashes with integrity checks. No unpinned third-party code execution.</div>
+      </div>
+    </div>
+    <p style="margin-top: 1rem; font-size: 0.8rem; color: var(--comment);">Full audit covers: backdoors, data exfiltration, credential theft, file system abuse, privilege escalation, unsafe FFI, command injection, XSS in UI rendering, dependency supply chain, and CI/CD pipeline security.</p>
   </section>
 
   <!-- About -->

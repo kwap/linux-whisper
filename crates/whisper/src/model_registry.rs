@@ -4,8 +4,7 @@
 //! names, download URLs, approximate sizes, and integrity hashes. Models are
 //! sourced from the official ggerganov/whisper.cpp HuggingFace repository.
 
-/// Placeholder SHA-256 hash used until real hashes are verified.
-const PLACEHOLDER_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+// SHA-256 hashes sourced from HuggingFace LFS metadata for ggerganov/whisper.cpp.
 
 /// Metadata describing a single whisper GGML model.
 #[derive(Debug, Clone)]
@@ -33,63 +32,63 @@ pub fn all_models() -> &'static [WhisperModel] {
             filename: "ggml-tiny.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
             size_bytes: 77_704_715,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
         },
         WhisperModel {
             name: "tiny.en",
             filename: "ggml-tiny.en.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
             size_bytes: 77_704_715,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
         },
         WhisperModel {
             name: "base",
             filename: "ggml-base.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
             size_bytes: 147_964_211,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
         },
         WhisperModel {
             name: "base.en",
             filename: "ggml-base.en.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
             size_bytes: 147_964_211,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
         },
         WhisperModel {
             name: "small",
             filename: "ggml-small.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
             size_bytes: 487_601_967,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
         },
         WhisperModel {
             name: "small.en",
             filename: "ggml-small.en.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
             size_bytes: 487_601_967,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         },
         WhisperModel {
             name: "medium",
             filename: "ggml-medium.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
             size_bytes: 1_533_774_781,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
         },
         WhisperModel {
             name: "medium.en",
             filename: "ggml-medium.en.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
             size_bytes: 1_533_774_781,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
         },
         WhisperModel {
             name: "large-v3",
             filename: "ggml-large-v3.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
             size_bytes: 3_094_623_691,
-            sha256: PLACEHOLDER_SHA256,
+            sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
         },
     ];
 

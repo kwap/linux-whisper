@@ -106,7 +106,14 @@ impl ModelManager {
         let dest = self.model_path(model);
         info!("Downloading model '{}' to {}", model.name, dest.display());
 
-        let response = reqwest::get(model.url)
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3600))
+            .build()
+            .map_err(|e| ModelManagerError::DownloadError(e.to_string()))?;
+
+        let response = client
+            .get(model.url)
+            .send()
             .await
             .map_err(|e| ModelManagerError::DownloadError(e.to_string()))?;
 
@@ -154,10 +161,9 @@ impl ModelManager {
             dest.display()
         );
 
-        // Verify integrity if a non-placeholder hash is provided.
+        // Verify integrity against the registry SHA-256 hash.
         let actual_hash = hex::encode(hasher.finalize());
-        let placeholder = "0".repeat(64);
-        if model.sha256 != placeholder && actual_hash != model.sha256 {
+        if actual_hash != model.sha256 {
             // Remove the corrupt file.
             warn!(
                 "Integrity check failed for '{}': expected {}, got {}",

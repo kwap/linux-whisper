@@ -105,7 +105,7 @@ fn scan_wayland_socket() -> Option<(DisplayServer, String)> {
         if name_str.starts_with("wayland-") && !name_str.ends_with(".lock") {
             // Verify it's actually a socket.
             let file_type = entry.file_type().ok()?;
-            if file_type.is_socket() || file_type.is_file() {
+            if file_type.is_socket() {
                 return Some((DisplayServer::Wayland, name_str.into_owned()));
             }
         }
@@ -124,7 +124,7 @@ fn runtime_dir() -> Option<PathBuf> {
     // Fall back to /run/user/<uid>.
     let output = Command::new("id").arg("-u").output().ok()?;
     let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if uid.is_empty() {
+    if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     let path = PathBuf::from(format!("/run/user/{uid}"));
