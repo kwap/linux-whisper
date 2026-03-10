@@ -403,7 +403,7 @@ footer {
       Local, privacy-focused speech-to-text for Linux.<br>
       <em>No cloud. No tracking. Just whisper.</em><span class="cursor"></span>
     </p>
-    <span class="version">v0.8.0</span>
+    <span class="version">v0.9.0</span>
   </section>
 
   <!-- How It Works -->
@@ -447,8 +447,8 @@ footer {
         <div class="feature-desc">Looks and feels like a proper GNOME app. Transcription window with search, copy, and export. No Electron.</div>
       </div>
       <div class="feature">
-        <div class="feature-title">System Tray Integration</div>
-        <div class="feature-desc">Lives in your system tray. Left-click to toggle recording. Right-click for menu. Stays out of your way.</div>
+        <div class="feature-title">System Tray with Pigeon Icon</div>
+        <div class="feature-desc">A geometric low-poly pigeon lives in your tray. Left-click to toggle recording &mdash; its eye glows red. Right-click for menu. Stays out of your way.</div>
       </div>
       <div class="feature">
         <div class="feature-title">CUDA GPU Acceleration</div>
@@ -465,37 +465,73 @@ footer {
     </div>
   </section>
 
+  <!-- Supported Platforms -->
+  <section id="platforms">
+    <h2 class="section-header">Supported Platforms</h2>
+    <p style="margin-bottom: 0.8rem; font-size: 0.85rem;">Linux Whisper runs on modern Linux distributions with GTK4 and libadwaita. Tested on:</p>
+    <ul class="flow-list">
+      <li><strong>Pop!_OS 24.04</strong> (primary development platform)</li>
+      <li><strong>Ubuntu 24.04+</strong> (and derivatives: Kubuntu, Xubuntu, etc.)</li>
+      <li><strong>Fedora 40+</strong></li>
+      <li><strong>Arch Linux</strong> (rolling release)</li>
+      <li><strong>Debian 13 (Trixie)+</strong></li>
+    </ul>
+    <p style="margin-top: 0.8rem; font-size: 0.8rem; color: var(--comment);">Requires: GTK 4.10+, libadwaita 1.5+, PipeWire or PulseAudio, Wayland or X11. NVIDIA GPU with CUDA optional but recommended for large models.</p>
+  </section>
+
   <!-- Prerequisites -->
   <section id="prerequisites">
     <h2 class="section-header">Prerequisites</h2>
-    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Install the required system dependencies (Ubuntu/Debian/Pop!_OS):</p>
+    <p style="margin-bottom: 0.5rem; font-size: 0.85rem; font-weight: 700;">Ubuntu / Pop!_OS / Debian:</p>
 
     <div class="terminal">
       <div class="terminal-bar">
         <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
         <button class="copy-btn" onclick="copyBlock(this)">copy</button>
       </div>
-      <pre><span class="cmt"># Required system libraries</span>
-<span class="prompt">$</span> <span class="cmd">sudo apt install libgtk-4-dev libadwaita-1-dev build-essential cmake</span>
+      <pre><span class="cmt"># Build tools and GTK4/libadwaita development libraries</span>
+<span class="prompt">$</span> <span class="cmd">sudo apt install build-essential cmake libgtk-4-dev libadwaita-1-dev</span>
 
-<span class="cmt"># Audio capture</span>
+<span class="cmt"># Audio capture (ALSA development headers)</span>
 <span class="prompt">$</span> <span class="cmd">sudo apt install libasound2-dev</span>
 
-<span class="cmt"># Wayland text injection (for auto-paste)</span>
+<span class="cmt"># Wayland clipboard and text injection (for auto-paste)</span>
 <span class="prompt">$</span> <span class="cmd">sudo apt install wtype wl-clipboard</span>
 
-<span class="cmt"># For global hotkeys (requires reboot after)</span>
+<span class="cmt"># Global hotkeys — add yourself to the input group (reboot required)</span>
 <span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span>
 
-<span class="cmt"># Rust toolchain</span>
+<span class="cmt"># Rust toolchain (if not already installed)</span>
 <span class="prompt">$</span> <span class="cmd">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</span></pre>
+    </div>
+
+    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700;">Fedora:</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+      </div>
+      <pre><span class="prompt">$</span> <span class="cmd">sudo dnf install gcc cmake gtk4-devel libadwaita-devel alsa-lib-devel wtype wl-clipboard</span>
+<span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span></pre>
+    </div>
+
+    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700;">Arch Linux:</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+      </div>
+      <pre><span class="prompt">$</span> <span class="cmd">sudo pacman -S base-devel cmake gtk4 libadwaita alsa-lib wtype wl-clipboard</span>
+<span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span></pre>
     </div>
   </section>
 
   <!-- Installation -->
   <section id="installation">
-    <h2 class="section-header">Installation</h2>
-    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Clone and build from source:</p>
+    <h2 class="section-header">Installation from Source</h2>
+    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Clone the repository and build:</p>
 
     <div class="terminal">
       <div class="terminal-bar">
@@ -504,13 +540,28 @@ footer {
       </div>
       <pre><span class="prompt">$</span> <span class="cmd">git clone https://github.com/piotrkwapin/linux-whisper.git</span>
 <span class="prompt">$</span> <span class="cmd">cd linux-whisper</span>
-<span class="prompt">$</span> <span class="cmd">cargo build --release</span>
-
-<span class="cmt"># Install system-wide</span>
-<span class="prompt">$</span> <span class="cmd">sudo cp target/release/linux-whisper /usr/local/bin/</span></pre>
+<span class="prompt">$</span> <span class="cmd">cargo build --release</span></pre>
     </div>
 
-    <p style="margin: 1.5rem 0 1rem; font-size: 0.85rem;">Or if using <a href="https://github.com/casey/just">just</a>:</p>
+    <p style="margin: 1.5rem 0 1rem; font-size: 0.85rem;">Install the binary, desktop file, and icons system-wide:</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+      </div>
+      <pre><span class="cmt"># Copy binary</span>
+<span class="prompt">$</span> <span class="cmd">sudo cp target/release/linux-whisper /usr/local/bin/</span>
+
+<span class="cmt"># Install desktop entry and icons</span>
+<span class="prompt">$</span> <span class="cmd">sudo cp data/com.linuxwhisper.LinuxWhisper.desktop /usr/share/applications/</span>
+<span class="prompt">$</span> <span class="cmd">sudo cp data/icons/hicolor/scalable/apps/com.linuxwhisper.LinuxWhisper.svg /usr/share/icons/hicolor/scalable/apps/</span>
+
+<span class="cmt"># Update icon cache</span>
+<span class="prompt">$</span> <span class="cmd">sudo gtk-update-icon-cache /usr/share/icons/hicolor/</span></pre>
+    </div>
+
+    <p style="margin: 1.5rem 0 1rem; font-size: 0.85rem;">Or use <a href="https://github.com/casey/just">just</a> for a one-liner:</p>
 
     <div class="terminal">
       <div class="terminal-bar">
@@ -520,6 +571,8 @@ footer {
       <pre><span class="prompt">$</span> <span class="cmd">just release</span>
 <span class="prompt">$</span> <span class="cmd">just install</span></pre>
     </div>
+
+    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem;">On first run, Linux Whisper will prompt you to download a Whisper model. You can change the model size in Preferences at any time.</p>
   </section>
 
   <!-- About -->

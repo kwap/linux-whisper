@@ -17,7 +17,7 @@ pub fn show_about(parent: Option<&impl IsA<gtk::Widget>>) {
         .website("https://github.com/piotrkwapin/linux-whisper")
         .issue_url("https://github.com/piotrkwapin/linux-whisper/issues")
         .license_type(License::Gpl30)
-        .comments("Local, privacy-focused speech-to-text transcription and dictation for Linux.\n\nPowered by OpenAI Whisper via whisper.cpp \u{2014} all processing happens on your device.\n\nReleased March 2026.")
+        .comments("Local, privacy-focused speech-to-text transcription and dictation for Linux.\n\nPowered by OpenAI Whisper via whisper.cpp \u{2014} all processing happens on your device.\n\nFeatures: system-wide hotkey dictation, audio file transcription, export to TXT/SRT/VTT/CSV, 9 model sizes, 50+ languages, CUDA GPU acceleration.\n\nThe geometric pigeon tray icon represents your always-listening assistant \u{2014} glowing red when recording.\n\nReleased March 2026.")
         .build();
 
     dialog.add_acknowledgement_section(Some("Built With"), &[

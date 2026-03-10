@@ -10,6 +10,7 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 arboard = "3"
 ksni = "0.3"
+resvg = "0.44"
 evdev = "0.13"
 nix = { version = "0.29", features = ["poll"] }
 

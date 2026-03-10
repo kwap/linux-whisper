@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Geometric low-poly pigeon — standing upright, facing right -->
+  <!-- RECORDING state — red glow from eye -->
+
+  <!-- HEAD — green/mint facets (top area) -->
+  <polygon points="155,8 120,35 150,55" fill="#a0d8bc"/>
+  <polygon points="155,8 190,28 150,55" fill="#8ecaae"/>
+  <polygon points="120,35 150,55 105,68" fill="#68b294"/>
+  <polygon points="150,55 190,28 182,60" fill="#78bca0"/>
+
+  <!-- BEAK -->
+  <polygon points="190,28 215,38 192,55" fill="#d8ca8a"/>
+
+  <!-- NECK/SHOULDER (teal) -->
+  <polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/>
+
+  <!-- WING — large blue area (left side of body) -->
+  <polygon points="95,90 50,130 115,148" fill="#7aa2bc"/>
+  <polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/>
+
+  <!-- CHEST — right side of body (darker teal) -->
+  <polygon points="180,98 182,60 185,150" fill="#589288"/>
+  <polygon points="180,98 185,150 115,148" fill="#6a9e98"/>
+
+  <!-- BELLY — lavender/mauve (bottom-center) -->
+  <polygon points="115,148 80,190 130,210" fill="#b2a6c2"/>
+  <polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/>
+
+  <!-- YELLOW ACCENT (bottom-left, between tail and belly) -->
+  <polygon points="80,190 48,218 100,210" fill="#b6b24a"/>
+
+  <!-- FEET -->
+  <polygon points="122,210 112,250 142,218" fill="#9a8a70"/>
+  <polygon points="150,210 148,250 168,214" fill="#9a8a70"/>
+
+  <!-- WING BULLSEYE — concentric circles -->
+  <circle cx="105" cy="155" r="35" fill="#5680a6"/>
+  <circle cx="105" cy="155" r="25" fill="#9c9462"/>
+  <circle cx="105" cy="155" r="16" fill="#c4bca0"/>
+  <circle cx="105" cy="155" r="8" fill="#5680a6"/>
+
+  <!-- EYE: RECORDING — intense red glow halo from eye -->
+  <circle cx="164" cy="42" r="90" fill="#ff0000" opacity="0.08"/>
+  <circle cx="164" cy="42" r="70" fill="#ff0808" opacity="0.12"/>
+  <circle cx="164" cy="42" r="52" fill="#ff1010" opacity="0.18"/>
+  <circle cx="164" cy="42" r="38" fill="#ff1818" opacity="0.28"/>
+  <circle cx="164" cy="42" r="26" fill="#ee2020" opacity="0.40"/>
+  <circle cx="164" cy="42" r="16" fill="#dd2020" opacity="0.60"/>
+  <!-- Eye hexagon (bright red) -->
+  <polygon points="158,38 165,34 172,38 170,46 164,50 157,46" fill="#ee1818"/>
+  <!-- Hot center -->
+  <circle cx="164" cy="42" r="7" fill="#ff3050"/>
+  <circle cx="164" cy="42" r="4" fill="#ff90b0"/>
+  <circle cx="164" cy="42" r="2" fill="#ffffff"/>
+</svg>

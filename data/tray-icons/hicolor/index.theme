@@ -1,0 +1,10 @@
+[Icon Theme]
+Name=LinuxWhisperTray
+Comment=Linux Whisper tray icons
+Directories=scalable/status
+
+[scalable/status]
+Size=48
+MinSize=16
+MaxSize=256
+Type=Scalable

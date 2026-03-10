@@ -19,6 +19,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
         .title("Preferences")
         .modal(true)
         .default_width(600)
+        .default_height(700)
         .build();
 
     // -----------------------------------------------------------------------

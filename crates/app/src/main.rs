@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
 use linux_whisper_core::config::AppConfig;
+use linux_whisper_core::model::Transcript;
 use linux_whisper_platform::hotkey::{EvdevHotkeyManager, HotkeyEvent, HotkeyManager};
 use linux_whisper_platform::tray::{spawn_tray, TrayAction, TrayHandle};
 use linux_whisper_whisper::model_manager::ModelManager;
@@ -32,6 +33,23 @@ fn main() {
 
     // Initialize the i18n loader.
     let _ = &*linux_whisper_i18n::LANGUAGE_LOADER;
+
+    // Build the GTK application early so we can check for existing instances
+    // BEFORE doing expensive work (tokio runtime, model loading).
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::FLAGS_NONE)
+        .build();
+
+    if let Err(e) = app.register(gio::Cancellable::NONE) {
+        error!("Failed to register application: {e}");
+        return;
+    }
+
+    if app.is_remote() {
+        info!("Linux Whisper is already running — exiting duplicate instance");
+        return;
+    }
 
     // Create a tokio runtime and leak it so it lives for the entire process.
     let rt = Box::leak(Box::new(
@@ -70,12 +88,7 @@ fn main() {
         );
     }
 
-    // Build the GTK application in headless mode (no window on activate).
-    let app = adw::Application::builder()
-        .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::FLAGS_NONE)
-        .build();
-
+    // App was already created and registered above for single-instance check.
     let worker_for_activate = worker.clone();
     let tokio_handle_for_activate = tokio_handle.clone();
 
@@ -197,6 +210,7 @@ fn on_activate(app: &adw::Application, worker: WhisperWorker, tokio_handle: toki
                         &worker_clone,
                         &tokio_handle_clone,
                         &tray_handle,
+                        &main_window,
                     );
                 }
                 TrayAction::ShowWindow => {
@@ -237,6 +251,7 @@ fn handle_toggle_recording(
     worker: &WhisperWorker,
     tokio_handle: &tokio::runtime::Handle,
     tray_handle: &Arc<TrayHandle>,
+    main_window: &Rc<RefCell<Option<MainWindow>>>,
 ) {
     let mut recording = is_recording.borrow_mut();
 
@@ -307,15 +322,14 @@ fn handle_toggle_recording(
                 };
 
                 // Channel to send transcription result back to GTK thread.
-                let (result_tx, result_rx) = std_mpsc::channel::<Result<String, String>>();
+                let (result_tx, result_rx) = std_mpsc::channel::<Result<Transcript, String>>();
 
                 tokio_handle.spawn(async move {
                     let result = worker.transcribe(audio, options).await;
                     match result {
                         Ok(transcript) => {
-                            let text = transcript.full_text();
-                            info!("Transcription complete: {} chars", text.len());
-                            let _ = result_tx.send(Ok(text));
+                            info!("Transcription complete: {} segment(s)", transcript.segment_count());
+                            let _ = result_tx.send(Ok(transcript));
                         }
                         Err(e) => {
                             error!("Transcription failed: {e}");
@@ -334,13 +348,31 @@ fn handle_toggle_recording(
 
                 // Poll for the transcription result on the GTK thread.
                 let config = AppConfig::load();
+                let main_window = main_window.clone();
                 glib::timeout_add_local(Duration::from_millis(100), move || {
                     match result_rx.try_recv() {
-                        Ok(Ok(text)) => {
+                        Ok(Ok(transcript)) => {
+                            let text = transcript.full_text();
                             if text.is_empty() {
                                 warn!("Transcription returned empty text");
-                            } else if let Err(e) = DictationService::auto_paste(&config, &text) {
-                                error!("Auto-paste failed: {e}");
+                            } else {
+                                // Auto-paste the text.
+                                if let Err(e) = DictationService::auto_paste(&config, &text) {
+                                    error!("Auto-paste failed: {e}");
+                                }
+
+                                // Populate the MainWindow transcript list if it exists.
+                                if let Some(ref win) = *main_window.borrow() {
+                                    win.clear_segments();
+                                    for seg in &transcript.segments {
+                                        win.add_segment_row(seg);
+                                    }
+                                    win.status_label.set_label(&format!(
+                                        "Dictation — {} segment(s), {:.1}s",
+                                        transcript.segment_count(),
+                                        transcript.duration,
+                                    ));
+                                }
                             }
                             glib::ControlFlow::Break
                         }
