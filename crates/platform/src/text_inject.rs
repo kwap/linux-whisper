@@ -141,9 +141,9 @@ impl TextInjector for YdotoolInjector {
 
         if let Some(ref mut stdin) = child.stdin {
             use std::io::Write;
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| InjectError::InjectFailed(format!("failed to write to ydotool: {e}")))?;
+            stdin.write_all(text.as_bytes()).map_err(|e| {
+                InjectError::InjectFailed(format!("failed to write to ydotool: {e}"))
+            })?;
         }
         // Close stdin so ydotool knows input is done.
         drop(child.stdin.take());
@@ -232,9 +232,7 @@ mod tests {
 
         mock.expect_inject_text()
             .times(1)
-            .returning(|_| {
-                Err(InjectError::ToolNotFound("xdotool not found".to_string()))
-            });
+            .returning(|_| Err(InjectError::ToolNotFound("xdotool not found".to_string())));
 
         let err = mock.inject_text("text").unwrap_err();
         assert!(matches!(err, InjectError::ToolNotFound(_)));
@@ -246,9 +244,7 @@ mod tests {
 
         mock.expect_inject_text()
             .times(1)
-            .returning(|_| {
-                Err(InjectError::InjectFailed("process crashed".to_string()))
-            });
+            .returning(|_| Err(InjectError::InjectFailed("process crashed".to_string())));
 
         let err = mock.inject_text("text").unwrap_err();
         assert!(matches!(err, InjectError::InjectFailed(_)));

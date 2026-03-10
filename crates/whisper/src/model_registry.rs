@@ -5,8 +5,7 @@
 //! sourced from the official ggerganov/whisper.cpp HuggingFace repository.
 
 /// Placeholder SHA-256 hash used until real hashes are verified.
-const PLACEHOLDER_SHA256: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+const PLACEHOLDER_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Metadata describing a single whisper GGML model.
 #[derive(Debug, Clone)]
@@ -207,11 +206,7 @@ mod tests {
     #[test]
     fn all_models_have_positive_size() {
         for model in all_models() {
-            assert!(
-                model.size_bytes > 0,
-                "model {} has zero size",
-                model.name
-            );
+            assert!(model.size_bytes > 0, "model {} has zero size", model.name);
         }
     }
 
@@ -244,7 +239,9 @@ mod tests {
     fn all_models_have_valid_urls() {
         for model in all_models() {
             assert!(
-                model.url.starts_with("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"),
+                model
+                    .url
+                    .starts_with("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"),
                 "model {} has unexpected URL prefix: {}",
                 model.name,
                 model.url

@@ -170,7 +170,10 @@ impl HotkeyManager for EvdevHotkeyManager {
         })?;
 
         let target_keys = parse_hotkey(hotkey)?;
-        info!("Binding hotkey \"{hotkey}\" → {} evdev key(s)", target_keys.len());
+        info!(
+            "Binding hotkey \"{hotkey}\" → {} evdev key(s)",
+            target_keys.len()
+        );
 
         // Open all keyboard devices.
         let keyboards = open_keyboard_devices()?;
@@ -363,18 +366,14 @@ fn hotkey_listener_loop(
 
 /// Open all `/dev/input/event*` devices that support keyboard keys.
 fn open_keyboard_devices() -> Result<Vec<Device>, HotkeyError> {
-    let entries = fs::read_dir("/dev/input").map_err(|e| {
-        HotkeyError::PermissionDenied(format!("cannot read /dev/input: {e}"))
-    })?;
+    let entries = fs::read_dir("/dev/input")
+        .map_err(|e| HotkeyError::PermissionDenied(format!("cannot read /dev/input: {e}")))?;
 
     let mut keyboards = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if !name.starts_with("event") {
             continue;
@@ -385,8 +384,11 @@ fn open_keyboard_devices() -> Result<Vec<Device>, HotkeyError> {
                 // Check if the device supports KEY events and has keyboard keys.
                 if let Some(supported) = dev.supported_keys() {
                     if supported.contains(KeyCode::KEY_SPACE) {
-                        debug!("Opened keyboard device: {} ({})",
-                            dev.name().unwrap_or("unknown"), path.display());
+                        debug!(
+                            "Opened keyboard device: {} ({})",
+                            dev.name().unwrap_or("unknown"),
+                            path.display()
+                        );
                         keyboards.push(dev);
                     }
                 }
@@ -455,13 +457,9 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        mock.expect_is_bound()
-            .times(1)
-            .returning(|| true);
+        mock.expect_is_bound().times(1).returning(|| true);
 
-        mock.expect_unbind()
-            .times(1)
-            .returning(|| Ok(()));
+        mock.expect_unbind().times(1).returning(|| Ok(()));
 
         assert!(mock.bind("ctrl+shift+space").is_ok());
         assert!(mock.is_bound());
@@ -474,9 +472,7 @@ mod tests {
 
         mock.expect_bind()
             .times(1)
-            .returning(|key| {
-                Err(HotkeyError::BindError(format!("unknown key: {key}")))
-            });
+            .returning(|key| Err(HotkeyError::BindError(format!("unknown key: {key}"))));
 
         let err = mock.bind("invalid_key").unwrap_err();
         assert!(matches!(err, HotkeyError::BindError(_)));
@@ -486,13 +482,11 @@ mod tests {
     fn mock_hotkey_manager_permission_denied() {
         let mut mock = MockHotkeyManager::new();
 
-        mock.expect_bind()
-            .times(1)
-            .returning(|_| {
-                Err(HotkeyError::PermissionDenied(
-                    "user not in input group".to_string(),
-                ))
-            });
+        mock.expect_bind().times(1).returning(|_| {
+            Err(HotkeyError::PermissionDenied(
+                "user not in input group".to_string(),
+            ))
+        });
 
         let err = mock.bind("ctrl+space").unwrap_err();
         assert!(matches!(err, HotkeyError::PermissionDenied(_)));
@@ -514,9 +508,7 @@ mod tests {
     fn mock_hotkey_manager_event_sender() {
         let mut mock = MockHotkeyManager::new();
 
-        mock.expect_set_event_sender()
-            .times(1)
-            .return_const(());
+        mock.expect_set_event_sender().times(1).return_const(());
 
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         mock.set_event_sender(tx);

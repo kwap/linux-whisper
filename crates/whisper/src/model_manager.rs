@@ -145,7 +145,9 @@ impl ModelManager {
             }
         }
 
-        file.flush().await.map_err(|e| ModelManagerError::IoError(e))?;
+        file.flush()
+            .await
+            .map_err(|e| ModelManagerError::IoError(e))?;
         drop(file);
 
         info!(
@@ -270,6 +272,9 @@ mod tests {
 
         let result = mgr.delete(model);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ModelManagerError::ModelNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ModelManagerError::ModelNotFound(_)
+        ));
     }
 }

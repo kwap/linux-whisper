@@ -172,12 +172,10 @@ pub fn decode_to_mono_16khz(path: &Path) -> Result<AudioBuffer, DecodeError> {
     let decoded = decode_file(path)?;
 
     let mono = crate::resample::to_mono(&decoded.samples, decoded.channels);
-    let resampled = crate::resample::resample(&mono, decoded.sample_rate, AudioBuffer::TARGET_SAMPLE_RATE);
+    let resampled =
+        crate::resample::resample(&mono, decoded.sample_rate, AudioBuffer::TARGET_SAMPLE_RATE);
 
-    info!(
-        "Converted to mono 16 kHz: {} samples",
-        resampled.len()
-    );
+    info!("Converted to mono 16 kHz: {} samples", resampled.len());
 
     Ok(AudioBuffer {
         samples: resampled,

@@ -59,7 +59,11 @@ pub fn export(transcript: &Transcript, format: ExportFormat) -> Result<String, E
 
 /// Export as plain text: one segment's text per line.
 fn export_txt(transcript: &Transcript) -> Result<String, ExportError> {
-    let lines: Vec<&str> = transcript.segments.iter().map(|s| s.text.as_str()).collect();
+    let lines: Vec<&str> = transcript
+        .segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect();
     Ok(lines.join("\n"))
 }
 
@@ -337,7 +341,11 @@ start,end,text
     #[test]
     fn csv_multiple_quotes() {
         let mut t = Transcript::new("Multi-Quotes", None, "base", TranscriptSource::Dictation);
-        t.add_segment(Segment::new(0.0, 2.0, "He said \"hi\" and she said \"bye\""));
+        t.add_segment(Segment::new(
+            0.0,
+            2.0,
+            "He said \"hi\" and she said \"bye\"",
+        ));
         let result = export(&t, ExportFormat::Csv).unwrap();
         assert!(result.contains("\"He said \"\"hi\"\" and she said \"\"bye\"\"\""));
     }
@@ -402,7 +410,11 @@ start,end,text
     fn timestamp_srt_separator_is_comma() {
         let ts = format_timestamp_srt(1.234);
         assert!(ts.contains(','), "SRT timestamp must use comma: {}", ts);
-        assert!(!ts.contains('.'), "SRT timestamp must not use period: {}", ts);
+        assert!(
+            !ts.contains('.'),
+            "SRT timestamp must not use period: {}",
+            ts
+        );
     }
 
     #[test]
@@ -410,7 +422,11 @@ start,end,text
         let ts = format_timestamp_vtt(1.234);
         // VTT has periods in the fractional part and colons in the time part.
         // Make sure there is no comma.
-        assert!(!ts.contains(','), "VTT timestamp must not use comma: {}", ts);
+        assert!(
+            !ts.contains(','),
+            "VTT timestamp must not use comma: {}",
+            ts
+        );
     }
 
     // -- ExportFormat enum tests ------------------------------------------

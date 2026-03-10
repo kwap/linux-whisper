@@ -158,8 +158,7 @@ impl WhisperWorker {
                             continue;
                         };
 
-                        let result =
-                            run_transcription(whisper_ctx, &audio, &options, &model_name);
+                        let result = run_transcription(whisper_ctx, &audio, &options, &model_name);
                         let _ = reply.send(result);
                     }
 
@@ -167,9 +166,10 @@ impl WhisperWorker {
                         info!("Worker: loading model from {}", path.display());
 
                         if !path.exists() {
-                            let _ = reply.send(Err(TranscribeError::TranscriptionFailed(
-                                format!("model file not found: {}", path.display()),
-                            )));
+                            let _ = reply.send(Err(TranscribeError::TranscriptionFailed(format!(
+                                "model file not found: {}",
+                                path.display()
+                            ))));
                             continue;
                         }
 
@@ -323,7 +323,10 @@ mod tests {
         let result = worker.transcribe(audio, opts).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TranscribeError::ModelNotLoaded));
+        assert!(matches!(
+            result.unwrap_err(),
+            TranscribeError::ModelNotLoaded
+        ));
 
         worker.shutdown().await;
     }
@@ -352,7 +355,11 @@ mod tests {
         let worker = WhisperWorker::new();
 
         let load_result = worker.load_model(model_path).await;
-        assert!(load_result.is_ok(), "load_model failed: {:?}", load_result.err());
+        assert!(
+            load_result.is_ok(),
+            "load_model failed: {:?}",
+            load_result.err()
+        );
 
         // Transcribe 1 second of silence.
         let audio = AudioBuffer {
@@ -392,7 +399,11 @@ mod tests {
         let worker = WhisperWorker::new();
 
         let load_result = worker.load_model(model_path).await;
-        assert!(load_result.is_ok(), "load_model failed: {:?}", load_result.err());
+        assert!(
+            load_result.is_ok(),
+            "load_model failed: {:?}",
+            load_result.err()
+        );
 
         // Transcribe 1 second of silence.
         let audio = AudioBuffer {

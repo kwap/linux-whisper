@@ -219,7 +219,12 @@ mod tests {
 
     #[test]
     fn transcript_new_has_empty_segments() {
-        let t = Transcript::new("Meeting", Some("en".into()), "base", TranscriptSource::Dictation);
+        let t = Transcript::new(
+            "Meeting",
+            Some("en".into()),
+            "base",
+            TranscriptSource::Dictation,
+        );
 
         assert!(!t.id.is_nil());
         assert_eq!(t.title, "Meeting");

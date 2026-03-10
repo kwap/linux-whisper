@@ -20,18 +20,13 @@ pub enum ConfigError {
 // ---------------------------------------------------------------------------
 
 /// Visual theme for the application UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
+    #[default]
     System,
     Light,
     Dark,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::System
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +100,7 @@ impl AppConfig {
                 }
             },
             Err(_) => {
-                tracing::info!(
-                    "No config file at {}; using defaults",
-                    path.display()
-                );
+                tracing::info!("No config file at {}; using defaults", path.display());
                 Self::default()
             }
         }
@@ -243,8 +235,7 @@ mod tests {
         };
 
         let toml_str = original.to_toml().expect("serialization should succeed");
-        let restored =
-            AppConfig::from_toml(&toml_str).expect("deserialization should succeed");
+        let restored = AppConfig::from_toml(&toml_str).expect("deserialization should succeed");
 
         assert_eq!(original, restored);
     }

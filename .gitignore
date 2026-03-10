@@ -5,3 +5,7 @@ Cargo.lock
 *~
 .idea/
 .vscode/
+.cargo/
+.claude/settings.local.json
+build-dir/
+cargo-sources.json

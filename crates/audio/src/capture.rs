@@ -307,10 +307,8 @@ impl AudioCapture for CpalCapture {
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let float_data: Vec<f32> = data
-                            .iter()
-                            .map(|&s| s as f32 / i16::MAX as f32)
-                            .collect();
+                        let float_data: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                         let mono = crate::resample::to_mono(&float_data, channels);
                         let mut buf = buffer.lock().expect("buffer lock poisoned");
                         buf.extend_from_slice(&mono);

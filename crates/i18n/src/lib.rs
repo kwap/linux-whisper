@@ -50,8 +50,9 @@ pub static LANGUAGE_LOADER: Lazy<FluentLanguageLoader> = Lazy::new(|| {
 /// linux_whisper_i18n::set_locale("es");
 /// ```
 pub fn set_locale(lang: &str) {
-    let langid: unic_langid::LanguageIdentifier =
-        lang.parse().unwrap_or_else(|_| unic_langid::langid!("en-US"));
+    let langid: unic_langid::LanguageIdentifier = lang
+        .parse()
+        .unwrap_or_else(|_| unic_langid::langid!("en-US"));
     let _ = i18n_embed::select(&*LANGUAGE_LOADER, &Localizations, &[langid]);
 }
 

@@ -65,14 +65,8 @@ impl MainWindow {
             Some(&fl!(LANGUAGE_LOADER, "preferences")),
             Some("app.preferences"),
         );
-        menu_model.append(
-            Some(&fl!(LANGUAGE_LOADER, "about")),
-            Some("app.about"),
-        );
-        menu_model.append(
-            Some(&fl!(LANGUAGE_LOADER, "quit")),
-            Some("app.quit"),
-        );
+        menu_model.append(Some(&fl!(LANGUAGE_LOADER, "about")), Some("app.about"));
+        menu_model.append(Some(&fl!(LANGUAGE_LOADER, "quit")), Some("app.quit"));
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -172,9 +166,7 @@ impl MainWindow {
             .build();
 
         // Spacer pushes the right-hand buttons to the end.
-        let spacer = gtk::Box::builder()
-            .hexpand(true)
-            .build();
+        let spacer = gtk::Box::builder().hexpand(true).build();
 
         let bottom_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -214,9 +206,7 @@ impl MainWindow {
         toast_overlay.set_child(Some(&content_box));
 
         // ToolbarView places the header bar at the top.
-        let toolbar_view = adw::ToolbarView::builder()
-            .content(&toast_overlay)
-            .build();
+        let toolbar_view = adw::ToolbarView::builder().content(&toast_overlay).build();
         toolbar_view.add_top_bar(&header);
 
         // ── Window ──────────────────────────────────────────────────────
@@ -304,8 +294,7 @@ impl MainWindow {
     /// Update the record button to reflect whether a recording is in progress.
     pub fn set_recording_state(&self, recording: bool) {
         if recording {
-            self.record_button
-                .set_label(&fl!(LANGUAGE_LOADER, "stop"));
+            self.record_button.set_label(&fl!(LANGUAGE_LOADER, "stop"));
             self.record_button
                 .set_icon_name("media-playback-stop-symbolic");
             self.record_button.remove_css_class("suggested-action");
@@ -424,9 +413,7 @@ impl MainWindow {
                                 let path_clone = path.clone();
                                 tokio_handle.spawn(async move {
                                     let result = svc.transcribe_file(&path_clone, language).await;
-                                    let _ = result_tx.send(
-                                        result.map_err(|e| e.to_string()),
-                                    );
+                                    let _ = result_tx.send(result.map_err(|e| e.to_string()));
                                 });
 
                                 // Poll for result on GTK thread.
@@ -435,14 +422,11 @@ impl MainWindow {
                                 let status_label = status_label.clone();
                                 let transcript_state = Rc::clone(&transcript_state);
 
-                                glib::timeout_add_local(
-                                    Duration::from_millis(100),
-                                    move || match result_rx.try_recv() {
+                                glib::timeout_add_local(Duration::from_millis(100), move || {
+                                    match result_rx.try_recv() {
                                         Ok(Ok(transcript)) => {
                                             // Clear existing rows.
-                                            while let Some(row) =
-                                                transcript_list.row_at_index(0)
-                                            {
+                                            while let Some(row) = transcript_list.row_at_index(0) {
                                                 transcript_list.remove(&row);
                                             }
 
@@ -478,8 +462,7 @@ impl MainWindow {
                                         Ok(Err(e)) => {
                                             error!("File transcription failed: {e}");
                                             status_label.set_label("Transcription failed");
-                                            let toast =
-                                                adw::Toast::new(&format!("Error: {e}"));
+                                            let toast = adw::Toast::new(&format!("Error: {e}"));
                                             toast_overlay.add_toast(toast);
                                             glib::ControlFlow::Break
                                         }
@@ -490,8 +473,8 @@ impl MainWindow {
                                             status_label.set_label("Transcription failed");
                                             glib::ControlFlow::Break
                                         }
-                                    },
-                                );
+                                    }
+                                });
                             }
                         }
                         Err(_) => {
@@ -585,9 +568,7 @@ fn build_export_popover() -> gtk::Popover {
         .css_classes(vec!["boxed-list"])
         .build();
 
-    let popover = gtk::Popover::builder()
-        .child(&list_box)
-        .build();
+    let popover = gtk::Popover::builder().child(&list_box).build();
 
     for (label, _ext) in &formats {
         let row = gtk::ListBoxRow::builder().build();
@@ -684,41 +665,33 @@ fn build_export_popover() -> gtk::Popover {
                     .build();
 
                 let toast_overlay = toast_overlay.clone();
-                dialog.save(
-                    Some(&app_window),
-                    gio::Cancellable::NONE,
-                    move |result| {
-                        match result {
-                            Ok(file) => {
-                                if let Some(path) = file.path() {
-                                    match TranscriptionService::save_export(&content, &path) {
-                                        Ok(()) => {
-                                            let name = path
-                                                .file_name()
-                                                .map(|n| n.to_string_lossy().to_string())
-                                                .unwrap_or_default();
-                                            info!("Exported to {}", path.display());
-                                            let toast = adw::Toast::new(&format!(
-                                                "Exported: {name}"
-                                            ));
-                                            toast_overlay.add_toast(toast);
-                                        }
-                                        Err(e) => {
-                                            error!("Save failed: {e}");
-                                            let toast = adw::Toast::new(&format!(
-                                                "Save failed: {e}"
-                                            ));
-                                            toast_overlay.add_toast(toast);
-                                        }
+                dialog.save(Some(&app_window), gio::Cancellable::NONE, move |result| {
+                    match result {
+                        Ok(file) => {
+                            if let Some(path) = file.path() {
+                                match TranscriptionService::save_export(&content, &path) {
+                                    Ok(()) => {
+                                        let name = path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_default();
+                                        info!("Exported to {}", path.display());
+                                        let toast = adw::Toast::new(&format!("Exported: {name}"));
+                                        toast_overlay.add_toast(toast);
+                                    }
+                                    Err(e) => {
+                                        error!("Save failed: {e}");
+                                        let toast = adw::Toast::new(&format!("Save failed: {e}"));
+                                        toast_overlay.add_toast(toast);
                                     }
                                 }
                             }
-                            Err(_) => {
-                                // User cancelled.
-                            }
                         }
-                    },
-                );
+                        Err(_) => {
+                            // User cancelled.
+                        }
+                    }
+                });
             }
         });
     }
@@ -736,7 +709,9 @@ fn collect_transcript_from_list(window: &adw::ApplicationWindow) -> Transcript {
         "Transcription",
         None,
         "",
-        TranscriptSource::File { path: String::new() },
+        TranscriptSource::File {
+            path: String::new(),
+        },
     );
 
     // Find the ListBox by walking children.

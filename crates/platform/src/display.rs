@@ -50,9 +50,7 @@ pub fn detect() -> DisplayServer {
     if let Some((server, socket_name)) = scan_wayland_socket() {
         // Set WAYLAND_DISPLAY so child processes (wl-copy, wtype, etc.) work.
         env::set_var("WAYLAND_DISPLAY", &socket_name);
-        tracing::info!(
-            "Detected {server} via socket scan; set WAYLAND_DISPLAY={socket_name}"
-        );
+        tracing::info!("Detected {server} via socket scan; set WAYLAND_DISPLAY={socket_name}");
         return server;
     }
 
@@ -165,71 +163,43 @@ mod tests {
 
     #[test]
     fn wayland_display_set_returns_wayland() {
-        let result = detect_with_env(
-            Some("wayland-0".to_string()),
-            None,
-            None,
-        );
+        let result = detect_with_env(Some("wayland-0".to_string()), None, None);
         assert_eq!(result, DisplayServer::Wayland);
     }
 
     #[test]
     fn wayland_display_empty_falls_through() {
-        let result = detect_with_env(
-            Some(String::new()),
-            None,
-            None,
-        );
+        let result = detect_with_env(Some(String::new()), None, None);
         assert_eq!(result, DisplayServer::Unknown);
     }
 
     #[test]
     fn xdg_session_type_wayland() {
-        let result = detect_with_env(
-            None,
-            Some("wayland".to_string()),
-            None,
-        );
+        let result = detect_with_env(None, Some("wayland".to_string()), None);
         assert_eq!(result, DisplayServer::Wayland);
     }
 
     #[test]
     fn xdg_session_type_x11() {
-        let result = detect_with_env(
-            None,
-            Some("x11".to_string()),
-            None,
-        );
+        let result = detect_with_env(None, Some("x11".to_string()), None);
         assert_eq!(result, DisplayServer::X11);
     }
 
     #[test]
     fn xdg_session_type_unknown_value() {
-        let result = detect_with_env(
-            None,
-            Some("tty".to_string()),
-            None,
-        );
+        let result = detect_with_env(None, Some("tty".to_string()), None);
         assert_eq!(result, DisplayServer::Unknown);
     }
 
     #[test]
     fn display_set_returns_x11() {
-        let result = detect_with_env(
-            None,
-            None,
-            Some(":0".to_string()),
-        );
+        let result = detect_with_env(None, None, Some(":0".to_string()));
         assert_eq!(result, DisplayServer::X11);
     }
 
     #[test]
     fn display_empty_returns_unknown() {
-        let result = detect_with_env(
-            None,
-            None,
-            Some(String::new()),
-        );
+        let result = detect_with_env(None, None, Some(String::new()));
         assert_eq!(result, DisplayServer::Unknown);
     }
 
@@ -251,11 +221,7 @@ mod tests {
 
     #[test]
     fn xdg_x11_takes_priority_over_display() {
-        let result = detect_with_env(
-            None,
-            Some("x11".to_string()),
-            Some(":0".to_string()),
-        );
+        let result = detect_with_env(None, Some("x11".to_string()), Some(":0".to_string()));
         assert_eq!(result, DisplayServer::X11);
     }
 

@@ -59,22 +59,31 @@ fn main() {
 
     // Load persisted configuration.
     let config = AppConfig::load();
-    info!("Config: model={}, language={}, hotkey={}", config.model, config.language, config.hotkey);
+    info!(
+        "Config: model={}, language={}, hotkey={}",
+        config.model, config.language, config.hotkey
+    );
 
     // Create the whisper worker (background inference thread).
     let worker = WhisperWorker::new();
 
     // Auto-load the configured model (or fall back to default).
     let mgr = ModelManager::new(AppConfig::models_dir());
-    let target_model = model_registry::find_model(&config.model)
-        .unwrap_or_else(|| {
-            warn!("Configured model '{}' not in registry; falling back to default", config.model);
-            model_registry::default_model()
-        });
+    let target_model = model_registry::find_model(&config.model).unwrap_or_else(|| {
+        warn!(
+            "Configured model '{}' not in registry; falling back to default",
+            config.model
+        );
+        model_registry::default_model()
+    });
 
     if mgr.is_downloaded(target_model) {
         let model_path = mgr.model_path(target_model);
-        info!("Auto-loading model '{}' from {}", target_model.name, model_path.display());
+        info!(
+            "Auto-loading model '{}' from {}",
+            target_model.name,
+            model_path.display()
+        );
         let worker_clone = worker.clone();
         rt.block_on(async move {
             if let Err(e) = worker_clone.load_model(model_path).await {
@@ -112,11 +121,17 @@ fn main() {
 ///
 /// Sets up the tray icon, audio capture, and bridges tray actions into the GTK
 /// main loop via a polling timer.
-fn on_activate(app: &adw::Application, worker: WhisperWorker, tokio_handle: tokio::runtime::Handle) {
+fn on_activate(
+    app: &adw::Application,
+    worker: WhisperWorker,
+    tokio_handle: tokio::runtime::Handle,
+) {
     // Create audio capture.
     let capture = match CpalCapture::new() {
         Ok(c) => {
-            let device_name = c.default_device_name().unwrap_or_else(|| "<unknown>".into());
+            let device_name = c
+                .default_device_name()
+                .unwrap_or_else(|| "<unknown>".into());
             info!("Audio capture ready — default device: {device_name}");
             Rc::new(RefCell::new(c))
         }
@@ -170,7 +185,10 @@ fn on_activate(app: &adw::Application, worker: WhisperWorker, tokio_handle: toki
                 tokio_handle.spawn(async move {
                     while let Some(event) = hotkey_rx.recv().await {
                         if event == HotkeyEvent::Pressed {
-                            if action_tx_for_hotkey.send(TrayAction::ToggleRecording).is_err() {
+                            if action_tx_for_hotkey
+                                .send(TrayAction::ToggleRecording)
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -258,7 +276,9 @@ fn handle_toggle_recording(
     if !*recording {
         // Start recording.
         let mut cap = capture.borrow_mut();
-        let device_name = cap.default_device_name().unwrap_or_else(|| "<unknown>".into());
+        let device_name = cap
+            .default_device_name()
+            .unwrap_or_else(|| "<unknown>".into());
 
         match cap.start_recording() {
             Ok(()) => {
@@ -328,7 +348,10 @@ fn handle_toggle_recording(
                     let result = worker.transcribe(audio, options).await;
                     match result {
                         Ok(transcript) => {
-                            info!("Transcription complete: {} segment(s)", transcript.segment_count());
+                            info!(
+                                "Transcription complete: {} segment(s)",
+                                transcript.segment_count()
+                            );
                             let _ = result_tx.send(Ok(transcript));
                         }
                         Err(e) => {

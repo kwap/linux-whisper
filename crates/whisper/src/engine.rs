@@ -168,7 +168,10 @@ mod tests {
         let opts = TranscribeOptions::default();
         let result = mock.transcribe(&audio, &opts);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TranscribeError::ModelNotLoaded));
+        assert!(matches!(
+            result.unwrap_err(),
+            TranscribeError::ModelNotLoaded
+        ));
         assert!(!mock.is_model_loaded());
     }
 
@@ -185,6 +188,9 @@ mod tests {
         let opts = TranscribeOptions::default();
         let result = mock.transcribe(&audio, &opts);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TranscribeError::InvalidAudio(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            TranscribeError::InvalidAudio(_)
+        ));
     }
 }

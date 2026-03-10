@@ -3,10 +3,13 @@ use ksni::{Icon, ToolTip, TrayMethods};
 use tokio::sync::mpsc;
 
 /// Embedded SVG source for the normal tray icon.
-const SVG_NORMAL: &str = include_str!("../../../data/tray-icons/hicolor/scalable/status/linux-whisper-tray.svg");
+const SVG_NORMAL: &str =
+    include_str!("../../../data/tray-icons/hicolor/scalable/status/linux-whisper-tray.svg");
 
 /// Embedded SVG source for the recording tray icon.
-const SVG_RECORDING: &str = include_str!("../../../data/tray-icons/hicolor/scalable/status/linux-whisper-tray-recording.svg");
+const SVG_RECORDING: &str = include_str!(
+    "../../../data/tray-icons/hicolor/scalable/status/linux-whisper-tray-recording.svg"
+);
 
 /// Re-export the ksni Handle type for use by the app crate.
 pub type TrayHandle = ksni::Handle<LinuxWhisperTray>;
@@ -56,7 +59,11 @@ impl ksni::Tray for LinuxWhisperTray {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        let svg = if self.recording { SVG_RECORDING } else { SVG_NORMAL };
+        let svg = if self.recording {
+            SVG_RECORDING
+        } else {
+            SVG_NORMAL
+        };
         // Provide multiple sizes; the DE picks the best fit.
         let mut icons = Vec::new();
         for size in [24, 32, 48, 64, 128] {
@@ -225,7 +232,10 @@ mod tests {
 
     #[test]
     fn tray_action_debug() {
-        assert_eq!(format!("{:?}", TrayAction::ToggleRecording), "ToggleRecording");
+        assert_eq!(
+            format!("{:?}", TrayAction::ToggleRecording),
+            "ToggleRecording"
+        );
         assert_eq!(format!("{:?}", TrayAction::Preferences), "Preferences");
         assert_eq!(format!("{:?}", TrayAction::About), "About");
         assert_eq!(format!("{:?}", TrayAction::Quit), "Quit");
@@ -348,20 +358,30 @@ mod tests {
     fn render_svg_icon_has_blue_body_pixels() {
         let icon = render_svg_to_icon(SVG_NORMAL, 48).unwrap();
         // Should have blue-ish body pixels (A=0xFF, B > R)
-        let blue_count = icon.data.chunks(4).filter(|px| {
-            px[0] == 0xFF && px[3] > px[1] && px[3] > 80
-        }).count();
-        assert!(blue_count > 50, "Should have visible blue body pixels, got {blue_count}");
+        let blue_count = icon
+            .data
+            .chunks(4)
+            .filter(|px| px[0] == 0xFF && px[3] > px[1] && px[3] > 80)
+            .count();
+        assert!(
+            blue_count > 50,
+            "Should have visible blue body pixels, got {blue_count}"
+        );
     }
 
     #[test]
     fn render_svg_icon_recording_has_red() {
         let icon = render_svg_to_icon(SVG_RECORDING, 48).unwrap();
         // Recording icon should have red pixels (A=0xFF, R>0xC0, G<0x60).
-        let red_count = icon.data.chunks(4).filter(|px| {
-            px[0] == 0xFF && px[1] > 0xC0 && px[2] < 0x60
-        }).count();
-        assert!(red_count > 5, "Should have visible red eye pixels, got {red_count}");
+        let red_count = icon
+            .data
+            .chunks(4)
+            .filter(|px| px[0] == 0xFF && px[1] > 0xC0 && px[2] < 0x60)
+            .count();
+        assert!(
+            red_count > 5,
+            "Should have visible red eye pixels, got {red_count}"
+        );
     }
 
     #[test]

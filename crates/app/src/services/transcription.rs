@@ -102,10 +102,7 @@ impl TranscriptionService {
     ///
     /// Creates the file (and any missing parent directories) if it does not
     /// already exist; overwrites the file if it does.
-    pub fn save_export(
-        content: &str,
-        path: &Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_export(content: &str, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // Ensure the parent directory exists.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

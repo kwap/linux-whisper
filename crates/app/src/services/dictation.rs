@@ -77,9 +77,7 @@ impl DictationService {
     ///
     /// The caller is responsible for delivering the transcript text to the user
     /// (e.g. via [`auto_paste`] or [`copy_to_clipboard`]).
-    pub async fn stop_and_transcribe(
-        &mut self,
-    ) -> Result<Transcript, Box<dyn std::error::Error>> {
+    pub async fn stop_and_transcribe(&mut self) -> Result<Transcript, Box<dyn std::error::Error>> {
         if !self.recording {
             return Err("not currently recording".into());
         }
@@ -130,10 +128,7 @@ impl DictationService {
     /// Strategy:
     /// 1. Always copy to clipboard first (so user always has the text).
     /// 2. If auto_paste is enabled, also try to type it into the focused window.
-    pub fn auto_paste(
-        config: &AppConfig,
-        text: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn auto_paste(config: &AppConfig, text: &str) -> Result<(), Box<dyn std::error::Error>> {
         let display_server = display::detect();
         info!("Display server detected: {display_server}");
 
@@ -156,7 +151,10 @@ impl DictationService {
                 info!("No text injection tool available; text is in clipboard");
             }
         } else {
-            info!("Auto-paste disabled; text copied to clipboard ({} chars)", text.len());
+            info!(
+                "Auto-paste disabled; text copied to clipboard ({} chars)",
+                text.len()
+            );
         }
 
         Ok(())
@@ -175,7 +173,10 @@ impl DictationService {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let clipboard = create_clipboard(display_server);
         clipboard.set_text(text)?;
-        info!("Copied {} chars to clipboard (display: {display_server})", text.len());
+        info!(
+            "Copied {} chars to clipboard (display: {display_server})",
+            text.len()
+        );
         Ok(())
     }
 }

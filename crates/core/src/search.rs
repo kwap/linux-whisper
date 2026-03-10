@@ -76,10 +76,7 @@ mod tests {
 
     #[test]
     fn search_returns_empty_for_no_match() {
-        let transcript = make_transcript(
-            "Demo",
-            vec![make_segment("alpha"), make_segment("beta")],
-        );
+        let transcript = make_transcript("Demo", vec![make_segment("alpha"), make_segment("beta")]);
 
         let results = search_transcript(&transcript, "gamma");
         assert!(results.is_empty());
@@ -87,10 +84,7 @@ mod tests {
 
     #[test]
     fn search_returns_empty_for_empty_query() {
-        let transcript = make_transcript(
-            "Demo",
-            vec![make_segment("some text")],
-        );
+        let transcript = make_transcript("Demo", vec![make_segment("some text")]);
 
         let results = search_transcript(&transcript, "");
         assert!(results.is_empty());
@@ -105,17 +99,17 @@ mod tests {
         let results = search_transcripts(&[t1, t2, t3], "rust");
         assert_eq!(results.len(), 2);
 
-        let titles: Vec<&str> = results.iter().map(|r| r.transcript_title.as_str()).collect();
+        let titles: Vec<&str> = results
+            .iter()
+            .map(|r| r.transcript_title.as_str())
+            .collect();
         assert!(titles.contains(&"First"));
         assert!(titles.contains(&"Third"));
     }
 
     #[test]
     fn search_finds_partial_word_matches() {
-        let transcript = make_transcript(
-            "Lecture",
-            vec![make_segment("understanding compilers")],
-        );
+        let transcript = make_transcript("Lecture", vec![make_segment("understanding compilers")]);
 
         let results = search_transcript(&transcript, "compil");
         assert_eq!(results.len(), 1);

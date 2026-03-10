@@ -31,9 +31,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
         .build();
 
     // -- Dictation group ----------------------------------------------------
-    let dictation_group = adw::PreferencesGroup::builder()
-        .title("Dictation")
-        .build();
+    let dictation_group = adw::PreferencesGroup::builder().title("Dictation").build();
 
     // Model selector — compact names: "Tiny (74 MB)" instead of long strings.
     let all_models = model_registry::all_models();
@@ -124,7 +122,10 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
                             let _ = tx.send(Some(downloaded as f64 / total as f64));
                         }
                     });
-                    let ok = mgr.download(&model_for_task, Some(progress_cb)).await.is_ok();
+                    let ok = mgr
+                        .download(&model_for_task, Some(progress_cb))
+                        .await
+                        .is_ok();
                     if ok {
                         info!("Model '{}' downloaded", model_for_task.name);
                     } else {
@@ -263,9 +264,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
     general_page.add(&dictation_group);
 
     // -- Appearance group ---------------------------------------------------
-    let appearance_group = adw::PreferencesGroup::builder()
-        .title("Appearance")
-        .build();
+    let appearance_group = adw::PreferencesGroup::builder().title("Appearance").build();
 
     let theme_model = gtk::StringList::new(&["System", "Light", "Dark"]);
     let theme_row = adw::ComboRow::builder()
@@ -294,9 +293,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
     // -- Model storage with expandable delete list --------------------------
     let storage_group = adw::PreferencesGroup::builder()
         .title("Model Storage")
-        .description(
-            "Manage downloaded whisper models",
-        )
+        .description("Manage downloaded whisper models")
         .build();
 
     let mgr = ModelManager::new(AppConfig::models_dir());

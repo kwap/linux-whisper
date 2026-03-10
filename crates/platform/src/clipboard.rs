@@ -38,9 +38,8 @@ impl ArboardClipboard {
     /// display server is running).
     pub fn new() -> Result<Self, ClipboardError> {
         // Verify that we can open a clipboard handle at construction time.
-        let _clipboard = arboard::Clipboard::new().map_err(|e| {
-            ClipboardError::AccessError(format!("failed to open clipboard: {e}"))
-        })?;
+        let _clipboard = arboard::Clipboard::new()
+            .map_err(|e| ClipboardError::AccessError(format!("failed to open clipboard: {e}")))?;
         Ok(Self { _private: () })
     }
 }
@@ -51,21 +50,17 @@ impl ClipboardManager for ArboardClipboard {
         // mutability workaround via unsafe pointer cast. However, the simpler
         // approach is to just create a new clipboard handle each time. This is
         // cheap on Linux.
-        let mut cb = arboard::Clipboard::new().map_err(|e| {
-            ClipboardError::AccessError(format!("failed to open clipboard: {e}"))
-        })?;
-        cb.get_text().map_err(|e| {
-            ClipboardError::AccessError(format!("failed to read clipboard: {e}"))
-        })
+        let mut cb = arboard::Clipboard::new()
+            .map_err(|e| ClipboardError::AccessError(format!("failed to open clipboard: {e}")))?;
+        cb.get_text()
+            .map_err(|e| ClipboardError::AccessError(format!("failed to read clipboard: {e}")))
     }
 
     fn set_text(&self, text: &str) -> Result<(), ClipboardError> {
-        let mut cb = arboard::Clipboard::new().map_err(|e| {
-            ClipboardError::AccessError(format!("failed to open clipboard: {e}"))
-        })?;
-        cb.set_text(text.to_string()).map_err(|e| {
-            ClipboardError::SetError(format!("failed to write clipboard: {e}"))
-        })
+        let mut cb = arboard::Clipboard::new()
+            .map_err(|e| ClipboardError::AccessError(format!("failed to open clipboard: {e}")))?;
+        cb.set_text(text.to_string())
+            .map_err(|e| ClipboardError::SetError(format!("failed to write clipboard: {e}")))
     }
 }
 
@@ -119,9 +114,9 @@ impl ClipboardManager for WlClipboard {
             .map_err(|e| ClipboardError::SetError(format!("failed to spawn wl-copy: {e}")))?;
 
         if let Some(ref mut stdin) = child.stdin {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| ClipboardError::SetError(format!("failed to write to wl-copy: {e}")))?;
+            stdin.write_all(text.as_bytes()).map_err(|e| {
+                ClipboardError::SetError(format!("failed to write to wl-copy: {e}"))
+            })?;
         }
 
         let status = child
