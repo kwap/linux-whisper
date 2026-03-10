@@ -39,7 +39,7 @@ impl TranscriptionService {
     ///
     /// * `path`     - Path to the source audio file (wav, mp3, ogg, m4a, etc.).
     /// * `language` - Optional ISO 639-1 language code. `None` means
-    ///                auto-detect.
+    ///   auto-detect.
     ///
     /// Returns a [`Transcript`] containing timed segments on success.
     pub async fn transcribe_file(

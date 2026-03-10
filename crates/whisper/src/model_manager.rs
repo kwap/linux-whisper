@@ -126,7 +126,7 @@ impl ModelManager {
         let mut stream = response.bytes_stream();
         let mut file = tokio::fs::File::create(&dest)
             .await
-            .map_err(|e| ModelManagerError::IoError(e))?;
+            .map_err(ModelManagerError::IoError)?;
 
         let mut hasher = Sha256::new();
         let mut downloaded: u64 = 0;
@@ -136,7 +136,7 @@ impl ModelManager {
             let chunk = chunk.map_err(|e| ModelManagerError::DownloadError(e.to_string()))?;
             file.write_all(&chunk)
                 .await
-                .map_err(|e| ModelManagerError::IoError(e))?;
+                .map_err(ModelManagerError::IoError)?;
             hasher.update(&chunk);
             downloaded += chunk.len() as u64;
 
@@ -145,9 +145,7 @@ impl ModelManager {
             }
         }
 
-        file.flush()
-            .await
-            .map_err(|e| ModelManagerError::IoError(e))?;
+        file.flush().await.map_err(ModelManagerError::IoError)?;
         drop(file);
 
         info!(

@@ -145,6 +145,12 @@ pub struct EvdevHotkeyManager {
     bound: bool,
 }
 
+impl Default for EvdevHotkeyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EvdevHotkeyManager {
     pub fn new() -> Self {
         Self {
@@ -315,10 +321,7 @@ fn hotkey_listener_loop(
             pollfds
                 .iter()
                 .enumerate()
-                .filter(|(_, pfd)| {
-                    pfd.revents()
-                        .map_or(false, |r| r.contains(PollFlags::POLLIN))
-                })
+                .filter(|(_, pfd)| pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN)))
                 .map(|(i, _)| i)
                 .collect()
         };

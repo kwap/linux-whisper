@@ -7,6 +7,10 @@ edition.workspace = true
 name = "linux-whisper"
 path = "src/main.rs"
 
+[features]
+default = ["cuda"]
+cuda = ["linux-whisper-whisper/cuda"]
+
 [dependencies]
 linux-whisper-core = { workspace = true }
 linux-whisper-audio = { workspace = true }

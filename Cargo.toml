@@ -19,7 +19,7 @@ rust-version = "1.80"
 # Internal crates
 linux-whisper-core = { path = "crates/core" }
 linux-whisper-audio = { path = "crates/audio" }
-linux-whisper-whisper = { path = "crates/whisper" }
+linux-whisper-whisper = { path = "crates/whisper", default-features = false }
 linux-whisper-platform = { path = "crates/platform" }
 linux-whisper-i18n = { path = "crates/i18n" }
 

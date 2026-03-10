@@ -27,6 +27,12 @@ pub struct XdotoolInjector {
     available: bool,
 }
 
+impl Default for XdotoolInjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl XdotoolInjector {
     pub fn new() -> Self {
         let available = which("xdotool");
@@ -71,6 +77,12 @@ pub struct WtypeInjector {
     available: bool,
 }
 
+impl Default for WtypeInjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WtypeInjector {
     pub fn new() -> Self {
         let available = which("wtype");
@@ -112,6 +124,12 @@ impl TextInjector for WtypeInjector {
 /// X11 and Wayland via the ydotoold daemon and /dev/uinput).
 pub struct YdotoolInjector {
     available: bool,
+}
+
+impl Default for YdotoolInjector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl YdotoolInjector {

@@ -304,7 +304,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
     // Expander row that shows downloaded models when clicked.
     let storage_expander = adw::ExpanderRow::builder()
         .title("Downloaded Models")
-        .subtitle(&format!(
+        .subtitle(format!(
             "{} model(s) \u{2014} {}",
             downloaded.len(),
             format_bytes(total_size)
@@ -316,7 +316,7 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
     for model in &downloaded {
         let row = adw::ActionRow::builder()
             .title(pretty_model_name(model.name))
-            .subtitle(&format_bytes(model.size_bytes))
+            .subtitle(format_bytes(model.size_bytes))
             .build();
 
         let delete_btn = gtk::Button::builder()

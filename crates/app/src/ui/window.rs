@@ -212,7 +212,7 @@ impl MainWindow {
         // ── Window ──────────────────────────────────────────────────────
         let window = adw::ApplicationWindow::builder()
             .application(app)
-            .title(&fl!(LANGUAGE_LOADER, "app-name"))
+            .title(fl!(LANGUAGE_LOADER, "app-name"))
             .default_width(900)
             .default_height(650)
             .content(&toolbar_view)
@@ -658,7 +658,7 @@ fn build_export_popover() -> gtk::Popover {
 
                 let default_name = format!("transcript.{ext}");
                 let dialog = gtk::FileDialog::builder()
-                    .title(&format!("Export as {format_label}"))
+                    .title(format!("Export as {format_label}"))
                     .initial_name(&default_name)
                     .filters(&filters)
                     .modal(true)

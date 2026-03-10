@@ -184,13 +184,12 @@ fn on_activate(
                 // Forward hotkey events → TrayAction::ToggleRecording on the action channel.
                 tokio_handle.spawn(async move {
                     while let Some(event) = hotkey_rx.recv().await {
-                        if event == HotkeyEvent::Pressed {
-                            if action_tx_for_hotkey
+                        if event == HotkeyEvent::Pressed
+                            && action_tx_for_hotkey
                                 .send(TrayAction::ToggleRecording)
                                 .is_err()
-                            {
-                                break;
-                            }
+                        {
+                            break;
                         }
                     }
                 });

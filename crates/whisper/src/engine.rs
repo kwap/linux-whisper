@@ -36,21 +36,12 @@ pub enum TranscribeError {
 // ---------------------------------------------------------------------------
 
 /// Options controlling how transcription is performed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TranscribeOptions {
     /// ISO 639-1 language code (e.g. "en", "de"). `None` means auto-detect.
     pub language: Option<String>,
     /// If `true`, translate non-English speech to English.
     pub translate: bool,
-}
-
-impl Default for TranscribeOptions {
-    fn default() -> Self {
-        Self {
-            language: None,
-            translate: false,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

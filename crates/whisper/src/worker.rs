@@ -53,6 +53,12 @@ pub struct WhisperWorker {
     sender: mpsc::Sender<WorkerCommand>,
 }
 
+impl Default for WhisperWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WhisperWorker {
     /// Spawns a new worker thread and returns a handle for communicating with it.
     pub fn new() -> Self {
