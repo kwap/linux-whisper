@@ -1,0 +1,198 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build .deb (Ubuntu ${{ matrix.ubuntu }})
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    strategy:
+      matrix:
+        ubuntu: ["24.04"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            libasound2-dev \
+            cmake dpkg-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-
+
+      - name: Build release binary
+        run: cargo build --workspace --release
+
+      - name: Run tests
+        run: |
+          cargo test --workspace --lib
+          cargo test --bin linux-whisper -p linux-whisper-app
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb package
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PKG_DIR="linux-whisper_${VERSION}_amd64"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/usr/share/applications"
+          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps"
+          mkdir -p "${PKG_DIR}/usr/share/glib-2.0/schemas"
+          mkdir -p "${PKG_DIR}/usr/share/metainfo"
+
+          # Binary
+          cp target/release/linux-whisper "${PKG_DIR}/usr/bin/"
+          strip "${PKG_DIR}/usr/bin/linux-whisper"
+
+          # Desktop + icons + metadata
+          APP_ID="com.linuxwhisper.LinuxWhisper"
+          cp "data/${APP_ID}.desktop" "${PKG_DIR}/usr/share/applications/"
+          cp "data/icons/${APP_ID}.svg" "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/"
+          cp "data/icons/${APP_ID}-symbolic.svg" "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps/"
+          cp "data/${APP_ID}.gschema.xml" "${PKG_DIR}/usr/share/glib-2.0/schemas/"
+          cp "data/${APP_ID}.metainfo.xml" "${PKG_DIR}/usr/share/metainfo/"
+
+          # Control file
+          INSTALLED_SIZE=$(du -sk "${PKG_DIR}/usr" | cut -f1)
+          cat > "${PKG_DIR}/DEBIAN/control" << CTRL
+          Package: linux-whisper
+          Version: ${VERSION}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libgtk-4-1 (>= 4.10), libadwaita-1-0 (>= 1.5), libasound2
+          Recommends: wtype, wl-clipboard
+          Maintainer: Piotr Kwapin <piotr@kwapin.com>
+          Description: Local speech-to-text transcription and dictation for Linux
+           Linux Whisper provides local, privacy-focused speech-to-text using
+           OpenAI's Whisper models. All processing happens on your device.
+           Features system-wide hotkey dictation, audio file transcription,
+           export to TXT/SRT/VTT/CSV, and CUDA GPU acceleration.
+          Homepage: https://github.com/piotrkwapin/linux-whisper
+          CTRL
+          # Remove leading spaces from heredoc (dpkg requires no leading whitespace in field names)
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
+
+          # Post-install script
+          cat > "${PKG_DIR}/DEBIAN/postinst" << 'POSTINST'
+          #!/bin/sh
+          set -e
+          glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null || true
+          gtk-update-icon-cache /usr/share/icons/hicolor/ 2>/dev/null || true
+          POSTINST
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/postinst"
+          chmod 755 "${PKG_DIR}/DEBIAN/postinst"
+
+          dpkg-deb --build --root-owner-group "${PKG_DIR}"
+          mv "${PKG_DIR}.deb" "linux-whisper_${VERSION}_amd64.deb"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-ubuntu-${{ matrix.ubuntu }}
+          path: "*.deb"
+
+  build-tarball:
+    name: Build tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev \
+            libasound2-dev \
+            cmake
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-
+
+      - name: Build release binary
+        run: cargo build --workspace --release
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tarball
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          DIR="linux-whisper-${VERSION}-x86_64-linux"
+          mkdir -p "${DIR}"
+          cp target/release/linux-whisper "${DIR}/"
+          strip "${DIR}/linux-whisper"
+          cp README.md LICENSE "${DIR}/" 2>/dev/null || true
+          cp -r data "${DIR}/"
+          tar czf "${DIR}.tar.gz" "${DIR}"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: "*.tar.gz"
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-deb, build-tarball]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Linux Whisper v${{ steps.version.outputs.version }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.tar.gz
