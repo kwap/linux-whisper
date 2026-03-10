@@ -467,6 +467,10 @@ footer {
         <div class="feature-title">Multilingual in Same Sentence</div>
         <div class="feature-desc">Switch between languages mid-speech without any configuration. Whisper detects and transcribes seamlessly.</div>
       </div>
+      <div class="feature">
+        <div class="feature-title">Flatpak &amp; .deb Packages</div>
+        <div class="feature-desc">Install via .deb on Ubuntu/Pop!_OS/Debian, or build as a Flatpak for any Linux distro. CI builds releases automatically.</div>
+      </div>
     </div>
   </section>
 
@@ -584,6 +588,25 @@ footer {
     <a href="https://github.com/piotrkwapin/linux-whisper/releases/latest" class="gh-btn" target="_blank" rel="noopener">
       &#8681; Download Latest Release
     </a>
+
+    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700;">Flatpak (any distro):</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
+      </div>
+      <pre><span class="cmt"># Install Flatpak and Flathub (if not already set up)</span>
+<span class="prompt">$</span> <span class="cmd">sudo apt install flatpak</span>
+<span class="prompt">$</span> <span class="cmd">flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo</span>
+
+<span class="cmt"># Build and install from source using flatpak-builder</span>
+<span class="prompt">$</span> <span class="cmd">sudo apt install flatpak-builder</span>
+<span class="prompt">$</span> <span class="cmd">flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47</span>
+<span class="prompt">$</span> <span class="cmd">flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable//24.08</span>
+<span class="prompt">$</span> <span class="cmd">flatpak-builder --user --install --force-clean build-dir com.linuxwhisper.LinuxWhisper.yml</span></pre>
+    </div>
+    <p style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--comment);">Note: Flatpak build requires generating <code>cargo-sources.json</code> first. See the repo README for details.</p>
   </section>
 
   <!-- About -->

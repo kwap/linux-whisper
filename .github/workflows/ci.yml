@@ -48,7 +48,11 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      - name: Run tests
-        run: |
-          cargo test --workspace --lib
-          cargo test --bin linux-whisper -p linux-whisper-app
+      - name: Run library tests
+        run: cargo test --workspace --lib
+
+      - name: Run binary tests
+        run: cargo test --bin linux-whisper -p linux-whisper-app
+
+      - name: Validate Flatpak manifest syntax
+        run: python3 -c "import yaml; yaml.safe_load(open('com.linuxwhisper.LinuxWhisper.yml'))"

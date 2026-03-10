@@ -1,0 +1,51 @@
+app-id: com.linuxwhisper.LinuxWhisper
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+command: linux-whisper
+
+finish-args:
+  # Display
+  - --socket=wayland
+  - --socket=fallback-x11
+
+  # Audio capture (microphone)
+  - --socket=pulseaudio
+
+  # D-Bus for system tray (StatusNotifierItem) and portals
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.portal.*
+  - --talk-name=org.freedesktop.Notifications
+
+  # Input devices (evdev global hotkeys)
+  - --device=input
+
+  # Config and model storage
+  - --filesystem=xdg-config/linux-whisper:create
+  - --filesystem=xdg-data/linux-whisper:create
+
+modules:
+  - name: linux-whisper
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/linux-whisper/cargo
+        CARGO_NET_OFFLINE: 'true'
+    sources:
+      - type: dir
+        path: .
+      - cargo-sources.json
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml
+      - cargo --offline build --release --manifest-path Cargo.toml
+      - install -Dm755 target/release/linux-whisper /app/bin/linux-whisper
+      - install -Dm644 data/com.linuxwhisper.LinuxWhisper.desktop /app/share/applications/com.linuxwhisper.LinuxWhisper.desktop
+      - install -Dm644 data/com.linuxwhisper.LinuxWhisper.metainfo.xml /app/share/metainfo/com.linuxwhisper.LinuxWhisper.metainfo.xml
+      - install -Dm644 data/com.linuxwhisper.LinuxWhisper.gschema.xml /app/share/glib-2.0/schemas/com.linuxwhisper.LinuxWhisper.gschema.xml
+      - install -Dm644 data/icons/com.linuxwhisper.LinuxWhisper.svg /app/share/icons/hicolor/scalable/apps/com.linuxwhisper.LinuxWhisper.svg
+      - install -Dm644 data/icons/com.linuxwhisper.LinuxWhisper-symbolic.svg /app/share/icons/hicolor/symbolic/apps/com.linuxwhisper.LinuxWhisper-symbolic.svg
+      - glib-compile-schemas /app/share/glib-2.0/schemas/ || true

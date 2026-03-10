@@ -79,3 +79,11 @@ deps:
 # Count lines of source code
 loc:
     @find crates -name '*.rs' | xargs wc -l | tail -1
+
+# Generate cargo-sources.json for Flatpak builds
+flatpak-sources:
+    ./build-aux/flatpak-cargo-generator.sh
+
+# Build and install as Flatpak (requires flatpak-builder, GNOME SDK)
+flatpak-build: flatpak-sources
+    flatpak-builder --user --install --force-clean build-dir {{app_id}}.yml
