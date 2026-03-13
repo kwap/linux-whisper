@@ -113,7 +113,6 @@ jobs:
           chmod 755 "${PKG_DIR}/DEBIAN/postinst"
 
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
-          mv "${PKG_DIR}.deb" "linux-whisper_${VERSION}_amd64.deb"
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v5

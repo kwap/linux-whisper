@@ -88,24 +88,20 @@ mod tests {
     }
 
     #[test]
-    fn set_locale_does_not_panic() {
-        set_locale("es");
-        set_locale("en-US");
-        // Invalid tag should fall back gracefully.
-        set_locale("not-a-real-locale");
-    }
-
-    #[test]
-    fn fl_macro_returns_locale_values() {
-        // Tests run in parallel sharing the global LANGUAGE_LOADER, so we
-        // test both locales in a single test to avoid race conditions.
+    fn set_locale_and_fl_macro() {
+        // All locale-mutating assertions in a single test to avoid races
+        // on the shared global LANGUAGE_LOADER.
         set_locale("en-US");
         assert_eq!(fl!(LANGUAGE_LOADER, "record"), "Record");
 
         set_locale("es");
         assert_eq!(fl!(LANGUAGE_LOADER, "record"), "Grabar");
 
+        // Invalid tag should fall back gracefully.
+        set_locale("not-a-real-locale");
+
         // Reset back to English.
         set_locale("en-US");
+        assert_eq!(fl!(LANGUAGE_LOADER, "record"), "Record");
     }
 }

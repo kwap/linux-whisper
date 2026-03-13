@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Head -->
+  <polygon points="155,8 120,35 150,55" fill="#a0d8bc"/>
+  <polygon points="155,8 190,28 150,55" fill="#8ecaae"/>
+  <polygon points="120,35 150,55 105,68" fill="#68b294"/>
+  <polygon points="150,55 190,28 182,60" fill="#78bca0"/>
+  <!-- Beak -->
+  <polygon points="190,28 215,38 192,55" fill="#d8ca8a"/>
+  <!-- Upper body -->
+  <polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/>
+  <!-- Chest -->
+  <polygon points="95,90 180,98 115,148" fill="#6a9eaa"/>
+  <!-- Wing -->
+  <polygon points="95,90 50,130 115,148" fill="#7aa2bc"/>
+  <polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/>
+  <!-- Back -->
+  <polygon points="180,98 182,60 185,150" fill="#589288"/>
+  <polygon points="180,98 185,150 115,148" fill="#6a9e98"/>
+  <!-- Belly -->
+  <polygon points="115,148 80,190 130,210" fill="#b2a6c2"/>
+  <polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/>
+  <!-- Feet -->
+  <polygon points="100,208 88,248 112,218" fill="#d8ca8a"/>
+  <polygon points="125,210 120,248 142,218" fill="#d8ca8a"/>
+  <!-- Eye -->
+  <circle cx="164" cy="42" r="4" fill="#1a1a1a"/>
+</svg>

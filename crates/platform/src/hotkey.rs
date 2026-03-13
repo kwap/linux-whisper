@@ -272,6 +272,54 @@ fn combo_active(groups: &[KeyGroup], held: &HashSet<KeyCode>) -> bool {
 // Listener thread
 // ---------------------------------------------------------------------------
 
+const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+
+/// Calculate exponential backoff: 1, 2, 4, 8, 16, 30, 30, ...
+fn reconnect_backoff_secs(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(5);
+    std::cmp::min(1u64 << shift, 30)
+}
+
+fn set_devices_nonblocking(keyboards: &[Device]) {
+    for dev in keyboards {
+        if let Err(e) = dev.set_nonblocking(true) {
+            warn!("Failed to set device non-blocking: {e}");
+        }
+    }
+}
+
+/// Check if any polled file descriptors report error/hangup/invalid status,
+/// which indicates stale devices (typically after sleep/wake).
+fn has_stale_revents(pollfds: &[PollFd]) -> bool {
+    pollfds.iter().any(|pfd| {
+        pfd.revents().is_some_and(|r| {
+            r.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
+        })
+    })
+}
+
+/// Try to reopen keyboard devices. Returns `None` if shutdown was requested
+/// or no devices could be opened.
+fn try_reopen_devices(shutdown: &Arc<AtomicBool>) -> Option<Vec<Device>> {
+    if shutdown.load(Ordering::Relaxed) {
+        return None;
+    }
+    match open_keyboard_devices() {
+        Ok(devices) if !devices.is_empty() => {
+            set_devices_nonblocking(&devices);
+            Some(devices)
+        }
+        Ok(_) => {
+            warn!("No keyboard devices found during reconnection");
+            None
+        }
+        Err(e) => {
+            warn!("Failed to reopen keyboard devices: {e}");
+            None
+        }
+    }
+}
+
 fn hotkey_listener_loop(
     mut keyboards: Vec<Device>,
     groups: Vec<KeyGroup>,
@@ -282,13 +330,9 @@ fn hotkey_listener_loop(
 
     let mut held_keys: HashSet<KeyCode> = HashSet::new();
     let mut combo_was_active = false;
+    let mut consecutive_errors: u32 = 0;
 
-    // Set all devices to non-blocking.
-    for dev in &keyboards {
-        if let Err(e) = dev.set_nonblocking(true) {
-            warn!("Failed to set device non-blocking: {e}");
-        }
-    }
+    set_devices_nonblocking(&keyboards);
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -299,6 +343,7 @@ fn hotkey_listener_loop(
         // Poll all device fds with a 200ms timeout.
         // We collect ready indices separately so the borrow on keyboards is released
         // before we call fetch_events().
+        let mut needs_reconnect = false;
         let ready_indices: Vec<usize> = {
             let mut pollfds: Vec<PollFd> = keyboards
                 .iter()
@@ -307,24 +352,61 @@ fn hotkey_listener_loop(
 
             let timeout = PollTimeout::try_from(200).unwrap();
             match poll(&mut pollfds, timeout) {
-                Ok(0) => continue, // timeout
-                Err(e) => {
-                    if e == nix::errno::Errno::EINTR {
-                        continue;
-                    }
-                    error!("poll() error: {e}");
-                    return;
+                Ok(0) => {
+                    consecutive_errors = 0;
+                    continue;
                 }
-                Ok(_) => {}
+                Err(e) if e == nix::errno::Errno::EINTR => continue,
+                Err(e) => {
+                    warn!("poll() error: {e}");
+                    needs_reconnect = true;
+                    vec![]
+                }
+                Ok(_) if has_stale_revents(&pollfds) => {
+                    warn!("Stale device descriptors detected (sleep/wake?)");
+                    needs_reconnect = true;
+                    vec![]
+                }
+                Ok(_) => pollfds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pfd)| {
+                        pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN))
+                    })
+                    .map(|(i, _)| i)
+                    .collect(),
+            }
+        };
+
+        if needs_reconnect {
+            consecutive_errors += 1;
+            if consecutive_errors > MAX_RECONNECT_ATTEMPTS {
+                error!(
+                    "Exceeded {} reconnect attempts, hotkey listener stopping",
+                    MAX_RECONNECT_ATTEMPTS
+                );
+                return;
             }
 
-            pollfds
-                .iter()
-                .enumerate()
-                .filter(|(_, pfd)| pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN)))
-                .map(|(i, _)| i)
-                .collect()
-        };
+            let backoff = reconnect_backoff_secs(consecutive_errors);
+            info!(
+                "Reconnecting devices (attempt {}/{}, backoff {}s)",
+                consecutive_errors, MAX_RECONNECT_ATTEMPTS, backoff
+            );
+            thread::sleep(std::time::Duration::from_secs(backoff));
+
+            if let Some(new_devices) = try_reopen_devices(&shutdown) {
+                info!("Reconnected to {} keyboard device(s)", new_devices.len());
+                keyboards = new_devices;
+                held_keys.clear();
+                combo_was_active = false;
+                consecutive_errors = 0;
+            }
+            continue;
+        }
+
+        // Successful poll — reset error counter.
+        consecutive_errors = 0;
 
         // Read events from all ready devices.
         for i in ready_indices {
@@ -334,11 +416,9 @@ fn hotkey_listener_loop(
                         let key = KeyCode::new(ev.code());
                         match ev.value() {
                             1 => {
-                                // Key press.
                                 held_keys.insert(key);
                             }
                             0 => {
-                                // Key release.
                                 held_keys.remove(&key);
                             }
                             2 => {} // Repeat — ignore.
@@ -626,5 +706,48 @@ mod tests {
         // Note: this may also fail due to input group, which is fine.
         let result = mgr.bind("Super+Space");
         assert!(result.is_err());
+    }
+
+    // -- reconnect helpers ---------------------------------------------------
+
+    #[test]
+    fn reconnect_backoff_first_attempt_is_1s() {
+        assert_eq!(reconnect_backoff_secs(1), 1);
+    }
+
+    #[test]
+    fn reconnect_backoff_exponential() {
+        assert_eq!(reconnect_backoff_secs(2), 2);
+        assert_eq!(reconnect_backoff_secs(3), 4);
+        assert_eq!(reconnect_backoff_secs(4), 8);
+        assert_eq!(reconnect_backoff_secs(5), 16);
+    }
+
+    #[test]
+    fn reconnect_backoff_capped_at_30s() {
+        assert_eq!(reconnect_backoff_secs(6), 30);
+        assert_eq!(reconnect_backoff_secs(10), 30);
+        assert_eq!(reconnect_backoff_secs(100), 30);
+    }
+
+    #[test]
+    fn reconnect_backoff_zero_attempt_is_1s() {
+        // Edge case: should not underflow or panic.
+        assert_eq!(reconnect_backoff_secs(0), 1);
+    }
+
+    #[test]
+    fn combo_state_resets_when_held_keys_cleared() {
+        // Simulates what happens on device reconnect: held_keys is cleared,
+        // so the combo must become inactive.
+        let groups = build_key_groups("Super+Space").unwrap();
+        let mut held = HashSet::new();
+        held.insert(KeyCode::KEY_LEFTMETA);
+        held.insert(KeyCode::KEY_SPACE);
+        assert!(combo_active(&groups, &held));
+
+        // Reconnect: clear held keys.
+        held.clear();
+        assert!(!combo_active(&groups, &held));
     }
 }
