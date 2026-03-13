@@ -43,11 +43,11 @@ All inference runs through [whisper.cpp](https://github.com/ggerganov/whisper.cp
 
 ## Supported Platforms
 
-- <img src="https://raw.githubusercontent.com/nicehash/logos/refs/heads/master/pop_os.svg" width="16" height="16" alt="Pop!_OS"> **Pop!_OS** 24.04
-- <img src="https://assets.ubuntu.com/v1/ce518a18-CoF-2022_simplified.svg" width="16" height="16" alt="Ubuntu"> **Ubuntu** 24.04+
-- <img src="https://fedoraproject.org/assets/images/logos/fedora-blue.png" width="16" height="16" alt="Fedora"> **Fedora** 40+
-- <img src="https://archlinux.org/static/logos/archlinux-logo-dark-scalable.svg" width="16" height="16" alt="Arch Linux"> **Arch Linux** Rolling
-- <img src="https://www.debian.org/logos/openlogo-nd.svg" width="16" height="16" alt="Debian"> **Debian** 13+
+- <img src="https://cdn.simpleicons.org/popos" width="16" height="16" alt="Pop!_OS"> **Pop!_OS** 24.04
+- <img src="https://cdn.simpleicons.org/ubuntu" width="16" height="16" alt="Ubuntu"> **Ubuntu** 24.04+
+- <img src="https://cdn.simpleicons.org/fedora" width="16" height="16" alt="Fedora"> **Fedora** 40+
+- <img src="https://cdn.simpleicons.org/archlinux" width="16" height="16" alt="Arch Linux"> **Arch Linux** Rolling
+- <img src="https://cdn.simpleicons.org/debian" width="16" height="16" alt="Debian"> **Debian** 13+
 
 ## Prerequisites
 
