@@ -94,37 +94,28 @@ a:hover { text-decoration: underline; }
   top: 1rem;
   right: 1rem;
   z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  padding: 0.4rem 0.8rem;
+  padding: 0.4rem;
   cursor: pointer;
-  font-family: var(--font);
-  font-size: 0.75rem;
   color: var(--comment);
   transition: all 0.3s;
+  line-height: 1;
+  font-size: 1.1rem;
+  width: 2.2rem;
+  height: 2.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .theme-toggle:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
-.theme-toggle .toggle-track {
-  width: 36px; height: 18px;
-  background: var(--border);
-  border-radius: 2px;
-  position: relative;
-  transition: background 0.3s;
-}
-.theme-toggle .toggle-knob {
-  width: 14px; height: 14px;
-  background: var(--accent);
-  position: absolute;
-  top: 2px; left: 2px;
-  transition: left 0.3s;
-}
-[data-theme="light"] .toggle-knob { left: 20px; }
+.theme-toggle .icon-sun,
+.theme-toggle .icon-moon { display: none; }
+[data-theme="light"] .theme-toggle .icon-moon { display: inline; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
 
 /* Container */
 .container {
@@ -146,8 +137,10 @@ a:hover { text-decoration: underline; }
   display: inline-block;
   text-align: left;
   text-shadow: 0 0 10px var(--accent-dim);
-  overflow-x: auto;
+  overflow: hidden;
   max-width: 100%;
+  -webkit-text-stroke: 0.3px var(--accent);
+  font-weight: 700;
 }
 .hero .tagline {
   margin-top: 2rem;
@@ -445,8 +438,8 @@ footer {
 <body>
 
 <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark/light mode">
-  <span class="toggle-label">mode</span>
-  <div class="toggle-track"><div class="toggle-knob"></div></div>
+  <span class="icon-sun">&#9728;</span>
+  <span class="icon-moon">&#9789;</span>
 </button>
 
 <div class="container">
@@ -808,7 +801,7 @@ footer {
 <script>
 // Theme management
 function getTheme() {
-  return localStorage.getItem('lw-theme') || 'dark';
+  return localStorage.getItem('lw-theme') || 'light';
 }
 
 function setTheme(theme) {
