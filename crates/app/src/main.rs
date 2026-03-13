@@ -14,6 +14,8 @@ use tracing::{error, info, warn};
 use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
 use linux_whisper_core::config::AppConfig;
 use linux_whisper_core::model::Transcript;
+use linux_whisper_llm::model_manager::LlmModelManager;
+use linux_whisper_llm::worker::LlmWorker;
 use linux_whisper_platform::hotkey::{EvdevHotkeyManager, HotkeyEvent, HotkeyManager};
 use linux_whisper_platform::tray::{spawn_tray, TrayAction, TrayHandle};
 use linux_whisper_whisper::model_manager::ModelManager;
@@ -97,14 +99,38 @@ fn main() {
         );
     }
 
+    // Create the LLM worker (background inference thread for text formatting).
+    let llm_worker = LlmWorker::new();
+
+    // Auto-load LLM model if enabled and downloaded.
+    if config.format.llm_enabled {
+        let llm_mgr = LlmModelManager::new(AppConfig::llm_models_dir());
+        if llm_mgr.is_ready() {
+            let model_path = llm_mgr.file_path(linux_whisper_llm::model_registry::model_file());
+            let tokenizer_path =
+                llm_mgr.file_path(linux_whisper_llm::model_registry::tokenizer_file());
+            info!("Auto-loading LLM model from {}", model_path.display());
+            let llm_clone = llm_worker.clone();
+            rt.block_on(async move {
+                if let Err(e) = llm_clone.load_model(model_path, tokenizer_path).await {
+                    error!("Failed to auto-load LLM model: {e}");
+                }
+            });
+        } else {
+            warn!("LLM formatting enabled but model not downloaded");
+        }
+    }
+
     // App was already created and registered above for single-instance check.
     let worker_for_activate = worker.clone();
+    let llm_worker_for_activate = llm_worker.clone();
     let tokio_handle_for_activate = tokio_handle.clone();
 
     app.connect_activate(move |app| {
         on_activate(
             app,
             worker_for_activate.clone(),
+            llm_worker_for_activate.clone(),
             tokio_handle_for_activate.clone(),
         );
     });
@@ -124,6 +150,7 @@ fn main() {
 fn on_activate(
     app: &adw::Application,
     worker: WhisperWorker,
+    llm_worker: LlmWorker,
     tokio_handle: tokio::runtime::Handle,
 ) {
     // Create audio capture.
@@ -216,6 +243,7 @@ fn on_activate(
     let app_clone = app.clone();
     let tokio_handle_clone = tokio_handle.clone();
     let worker_clone = worker.clone();
+    let llm_worker_clone = llm_worker.clone();
 
     glib::timeout_add_local(Duration::from_millis(50), move || {
         while let Ok(action) = action_rx.try_recv() {
@@ -225,6 +253,7 @@ fn on_activate(
                         &capture,
                         &is_recording,
                         &worker_clone,
+                        &llm_worker_clone,
                         &tokio_handle_clone,
                         &tray_handle,
                         &main_window,
@@ -266,6 +295,7 @@ fn handle_toggle_recording(
     capture: &Rc<RefCell<CpalCapture>>,
     is_recording: &Rc<RefCell<bool>>,
     worker: &WhisperWorker,
+    llm_worker: &LlmWorker,
     tokio_handle: &tokio::runtime::Handle,
     tray_handle: &Arc<TrayHandle>,
     main_window: &Rc<RefCell<Option<MainWindow>>>,
@@ -341,8 +371,11 @@ fn handle_toggle_recording(
                 };
 
                 // Channel to send transcription result back to GTK thread.
-                let (result_tx, result_rx) = std_mpsc::channel::<Result<Transcript, String>>();
+                // Carries (Transcript, formatted_text) on success.
+                let (result_tx, result_rx) =
+                    std_mpsc::channel::<Result<(Transcript, String), String>>();
 
+                let llm_worker = llm_worker.clone();
                 tokio_handle.spawn(async move {
                     let result = worker.transcribe(audio, options).await;
                     match result {
@@ -351,7 +384,25 @@ fn handle_toggle_recording(
                                 "Transcription complete: {} segment(s)",
                                 transcript.segment_count()
                             );
-                            let _ = result_tx.send(Ok(transcript));
+
+                            // Format the text: LLM if enabled, otherwise basic.
+                            let formatted = if config.format.llm_enabled {
+                                let raw = transcript.full_text();
+                                match llm_worker.format_text(raw.clone()).await {
+                                    Ok(text) => {
+                                        info!("LLM formatting applied");
+                                        text
+                                    }
+                                    Err(e) => {
+                                        warn!("LLM formatting failed, falling back to basic: {e}");
+                                        transcript.formatted_text(&config.format)
+                                    }
+                                }
+                            } else {
+                                transcript.formatted_text(&config.format)
+                            };
+
+                            let _ = result_tx.send(Ok((transcript, formatted)));
                         }
                         Err(e) => {
                             error!("Transcription failed: {e}");
@@ -373,13 +424,14 @@ fn handle_toggle_recording(
                 let main_window = main_window.clone();
                 glib::timeout_add_local(Duration::from_millis(100), move || {
                     match result_rx.try_recv() {
-                        Ok(Ok(transcript)) => {
-                            let text = transcript.full_text();
-                            if text.is_empty() {
+                        Ok(Ok((transcript, formatted_text))) => {
+                            if formatted_text.is_empty() {
                                 warn!("Transcription returned empty text");
                             } else {
-                                // Auto-paste the text.
-                                if let Err(e) = DictationService::auto_paste(&config, &text) {
+                                // Auto-paste the formatted text.
+                                if let Err(e) =
+                                    DictationService::auto_paste(&config, &formatted_text)
+                                {
                                     error!("Auto-paste failed: {e}");
                                 }
 

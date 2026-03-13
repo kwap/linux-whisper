@@ -5,6 +5,7 @@ members = [
     "crates/whisper",
     "crates/platform",
     "crates/i18n",
+    "crates/llm",
     "crates/app",
 ]
 resolver = "2"
@@ -22,6 +23,7 @@ linux-whisper-audio = { path = "crates/audio" }
 linux-whisper-whisper = { path = "crates/whisper", default-features = false }
 linux-whisper-platform = { path = "crates/platform" }
 linux-whisper-i18n = { path = "crates/i18n" }
+linux-whisper-llm = { path = "crates/llm", default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

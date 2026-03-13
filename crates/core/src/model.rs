@@ -117,6 +117,11 @@ impl Transcript {
             .join(" ")
     }
 
+    /// Returns the full text with basic formatting applied.
+    pub fn formatted_text(&self, opts: &crate::format::FormatOptions) -> String {
+        crate::format::basic_format_segments(&self.segments, opts)
+    }
+
     /// Appends a segment to this transcript.
     pub fn add_segment(&mut self, segment: Segment) {
         self.segments.push(segment);
@@ -392,5 +397,45 @@ mod tests {
         let deserialized: Transcript = toml::from_str(&serialized).expect("deserialize");
 
         assert_eq!(deserialized.full_text(), "alpha beta");
+    }
+
+    #[test]
+    fn formatted_text_with_defaults() {
+        let mut t = Transcript::new("Format", None, "base", TranscriptSource::Dictation);
+        t.add_segment(Segment::new(0.0, 2.0, "hello. world."));
+        let opts = crate::format::FormatOptions::default();
+        let formatted = t.formatted_text(&opts);
+        assert_eq!(formatted, "Hello. World.");
+    }
+
+    #[test]
+    fn formatted_text_disabled_returns_raw() {
+        let mut t = Transcript::new("Raw", None, "base", TranscriptSource::Dictation);
+        t.add_segment(Segment::new(0.0, 1.0, "hello. world."));
+        let opts = crate::format::FormatOptions {
+            enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(t.formatted_text(&opts), t.full_text());
+    }
+
+    #[test]
+    fn formatted_text_preserves_full_text() {
+        let mut t = Transcript::new("Preserve", None, "base", TranscriptSource::Dictation);
+        t.add_segment(Segment::new(0.0, 1.0, "hello"));
+        t.add_segment(Segment::new(1.0, 2.0, "world"));
+        let opts = crate::format::FormatOptions::default();
+        let _ = t.formatted_text(&opts);
+        assert_eq!(t.full_text(), "hello world");
+    }
+
+    #[test]
+    fn formatted_text_uses_timestamp_gaps() {
+        let mut t = Transcript::new("Gaps", None, "base", TranscriptSource::Dictation);
+        t.add_segment(Segment::new(0.0, 1.0, "first part."));
+        t.add_segment(Segment::new(3.0, 4.0, "second part."));
+        let opts = crate::format::FormatOptions::default();
+        let formatted = t.formatted_text(&opts);
+        assert!(formatted.contains("\n\n"));
     }
 }

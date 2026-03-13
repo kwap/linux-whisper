@@ -5,6 +5,7 @@ use adw::prelude::*;
 use gtk::glib;
 use linux_whisper_audio::capture::CpalCapture;
 use linux_whisper_core::config::AppConfig;
+use linux_whisper_llm::model_manager::LlmModelManager;
 use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
 use tracing::{error, info};
@@ -262,6 +263,95 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
     }
 
     general_page.add(&dictation_group);
+
+    // -- Text Formatting group ----------------------------------------------
+    let formatting_group = adw::PreferencesGroup::builder()
+        .title("Text Formatting")
+        .build();
+
+    let llm_row = adw::SwitchRow::builder()
+        .title("AI-powered formatting")
+        .subtitle(
+            "Uses a local LLM (~490 MB download) to intelligently format dictated text. \
+             Adds 1\u{2013}2s (GPU) or 5\u{2013}9s (CPU) per dictation.",
+        )
+        .active(config.format.llm_enabled)
+        .build();
+
+    {
+        let config_for_llm = config.clone();
+        let handle_for_llm = tokio_handle.clone();
+
+        llm_row.connect_active_notify(move |row| {
+            let enabled = row.is_active();
+            let mut cfg = config_for_llm.clone();
+            cfg.format.llm_enabled = enabled;
+            if let Err(e) = cfg.save() {
+                error!("Failed to save LLM formatting preference: {e}");
+            }
+            info!("LLM formatting set to {enabled}");
+
+            if enabled {
+                let llm_mgr = LlmModelManager::new(AppConfig::llm_models_dir());
+                if llm_mgr.is_ready() {
+                    row.set_subtitle(
+                        "Model ready \u{2014} formatting will apply on next dictation",
+                    );
+                    return;
+                }
+
+                // Trigger download.
+                info!("Starting LLM model download");
+                let (prog_tx, prog_rx) = std_mpsc::channel::<Option<f64>>();
+
+                handle_for_llm.spawn(async move {
+                    let mgr = LlmModelManager::new(AppConfig::llm_models_dir());
+                    let tx = prog_tx.clone();
+                    let progress_cb = std::sync::Arc::new(move |downloaded: u64, total: u64| {
+                        if total > 0 {
+                            let _ = tx.send(Some(downloaded as f64 / total as f64));
+                        }
+                    });
+                    let ok = mgr.download_all(Some(progress_cb)).await.is_ok();
+                    if ok {
+                        info!("LLM model download complete");
+                    } else {
+                        error!("LLM model download failed");
+                    }
+                    let _ = prog_tx.send(None);
+                });
+
+                let row_ref = row.clone();
+                row.set_subtitle("Downloading AI model...");
+
+                glib::timeout_add_local(Duration::from_millis(200), move || {
+                    loop {
+                        match prog_rx.try_recv() {
+                            Ok(Some(frac)) => {
+                                let pct = (frac * 100.0) as u32;
+                                row_ref.set_subtitle(&format!("Downloading AI model... {pct}%"));
+                            }
+                            Ok(None) => {
+                                row_ref.set_subtitle(
+                                    "Model ready \u{2014} formatting will apply on next dictation",
+                                );
+                                return glib::ControlFlow::Break;
+                            }
+                            Err(std_mpsc::TryRecvError::Empty) => break,
+                            Err(std_mpsc::TryRecvError::Disconnected) => {
+                                row_ref.set_subtitle("Download failed");
+                                return glib::ControlFlow::Break;
+                            }
+                        }
+                    }
+                    glib::ControlFlow::Continue
+                });
+            }
+        });
+    }
+
+    formatting_group.add(&llm_row);
+    general_page.add(&formatting_group);
 
     // -- Appearance group ---------------------------------------------------
     let appearance_group = adw::PreferencesGroup::builder().title("Appearance").build();

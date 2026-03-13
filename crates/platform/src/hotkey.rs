@@ -356,7 +356,7 @@ fn hotkey_listener_loop(
                     consecutive_errors = 0;
                     continue;
                 }
-                Err(e) if e == nix::errno::Errno::EINTR => continue,
+                Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => {
                     warn!("poll() error: {e}");
                     needs_reconnect = true;
@@ -370,9 +370,7 @@ fn hotkey_listener_loop(
                 Ok(_) => pollfds
                     .iter()
                     .enumerate()
-                    .filter(|(_, pfd)| {
-                        pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN))
-                    })
+                    .filter(|(_, pfd)| pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN)))
                     .map(|(i, _)| i)
                     .collect(),
             }

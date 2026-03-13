@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -57,7 +57,7 @@
 
 html {
   scroll-behavior: smooth;
-  font-size: 16px;
+  font-size: 17px;
 }
 
 body {
@@ -546,6 +546,14 @@ footer {
           <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
         </div>
         <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Switch languages mid-sentence. Whisper detects and transcribes seamlessly with zero configuration.</div></div>
+      </div>
+      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
+        <div class="accordion-header">
+          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span class="accordion-label">Smart Text Beautifier</span>
+          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Automatic paragraph breaks, capitalization, and punctuation cleanup. Opt-in AI-powered formatting with a local LLM for even smarter results.</div></div>
       </div>
       <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
         <div class="accordion-header">

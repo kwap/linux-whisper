@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::format::FormatOptions;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -61,6 +63,9 @@ pub struct AppConfig {
 
     /// Whether to display per-segment confidence scores after transcription.
     pub show_confidence: bool,
+
+    /// Text formatting options for transcribed output.
+    pub format: FormatOptions,
 }
 
 impl Default for AppConfig {
@@ -73,6 +78,7 @@ impl Default for AppConfig {
             theme: Theme::default(),
             minimize_to_tray: true,
             show_confidence: false,
+            format: FormatOptions::default(),
         }
     }
 }
@@ -170,6 +176,13 @@ impl AppConfig {
         Self::data_dir().join("models")
     }
 
+    /// Returns the directory where downloaded LLM models are stored.
+    ///
+    /// This is `data_dir()/llm-models`.
+    pub fn llm_models_dir() -> PathBuf {
+        Self::data_dir().join("llm-models")
+    }
+
     /// Returns the path to the main configuration file (`config.toml`).
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
@@ -208,6 +221,10 @@ fn dirs_fallback_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that mutate XDG env vars must hold this lock to avoid races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_config_has_expected_values() {
@@ -232,6 +249,10 @@ mod tests {
             theme: Theme::Dark,
             minimize_to_tray: false,
             show_confidence: true,
+            format: FormatOptions {
+                enabled: false,
+                llm_enabled: true,
+            },
         };
 
         let toml_str = original.to_toml().expect("serialization should succeed");
@@ -284,6 +305,7 @@ mod tests {
 
     #[test]
     fn config_dir_returns_reasonable_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = AppConfig::config_dir();
         let dir_str = dir.to_string_lossy();
 
@@ -296,6 +318,7 @@ mod tests {
 
     #[test]
     fn data_dir_returns_reasonable_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = AppConfig::data_dir();
         let dir_str = dir.to_string_lossy();
 
@@ -307,6 +330,7 @@ mod tests {
 
     #[test]
     fn models_dir_is_inside_data_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let models = AppConfig::models_dir();
         let data = AppConfig::data_dir();
 
@@ -322,6 +346,7 @@ mod tests {
 
     #[test]
     fn config_path_is_inside_config_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let path = AppConfig::config_path();
         let dir = AppConfig::config_dir();
 
@@ -337,7 +362,7 @@ mod tests {
 
     #[test]
     fn config_dir_respects_xdg_env() {
-        // Temporarily override the env var inside this single-threaded test.
+        let _lock = ENV_LOCK.lock().unwrap();
         let key = "XDG_CONFIG_HOME";
         let prev = std::env::var(key).ok();
 
@@ -354,6 +379,7 @@ mod tests {
 
     #[test]
     fn data_dir_respects_xdg_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let key = "XDG_DATA_HOME";
         let prev = std::env::var(key).ok();
 
@@ -387,7 +413,7 @@ mod tests {
 
     #[test]
     fn load_returns_defaults_when_no_file() {
-        // Point config to a nonexistent directory.
+        let _lock = ENV_LOCK.lock().unwrap();
         let key = "XDG_CONFIG_HOME";
         let prev = std::env::var(key).ok();
 
@@ -407,6 +433,7 @@ mod tests {
 
     #[test]
     fn save_and_load_round_trip() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let key = "XDG_CONFIG_HOME";
         let prev = std::env::var(key).ok();
 
@@ -444,5 +471,21 @@ mod tests {
             toml_str.contains("\"dark\""),
             "expected lowercase 'dark' in TOML output, got:\n{toml_str}"
         );
+    }
+
+    #[test]
+    fn default_config_has_format_enabled() {
+        let cfg = AppConfig::default();
+        assert!(cfg.format.enabled);
+        assert!(!cfg.format.llm_enabled);
+    }
+
+    #[test]
+    fn llm_models_dir_is_inside_data_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let llm = AppConfig::llm_models_dir();
+        let data = AppConfig::data_dir();
+        assert!(llm.starts_with(&data));
+        assert!(llm.ends_with("llm-models"));
     }
 }

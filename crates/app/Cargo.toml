@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = ["cuda"]
-cuda = ["linux-whisper-whisper/cuda"]
+cuda = ["linux-whisper-whisper/cuda", "linux-whisper-llm/cuda"]
 
 [dependencies]
 linux-whisper-core = { workspace = true }
@@ -17,6 +17,7 @@ linux-whisper-audio = { workspace = true }
 linux-whisper-whisper = { workspace = true }
 linux-whisper-platform = { workspace = true }
 linux-whisper-i18n = { workspace = true }
+linux-whisper-llm = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
