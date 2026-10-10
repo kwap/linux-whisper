@@ -1,858 +1,424 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Linux Whisper - Local Speech-to-Text for Linux</title>
-<meta name="description" content="Local, privacy-focused speech-to-text for Linux. No cloud. No tracking. Just whisper.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><polygon points='155,8 120,35 150,55' fill='%23a0d8bc'/><polygon points='155,8 190,28 150,55' fill='%238ecaae'/><polygon points='120,35 150,55 105,68' fill='%2368b294'/><polygon points='150,55 190,28 182,60' fill='%2378bca0'/><polygon points='190,28 215,38 192,55' fill='%23d8ca8a'/><polygon points='105,68 150,55 182,60 180,98 95,90' fill='%2356a08e'/><polygon points='95,90 50,130 115,148' fill='%237aa2bc'/><polygon points='50,130 18,185 80,190 115,148' fill='%2384acc4'/><polygon points='180,98 182,60 185,150' fill='%23589288'/><polygon points='180,98 185,150 115,148' fill='%236a9e98'/><polygon points='115,148 80,190 130,210' fill='%23b2a6c2'/><polygon points='115,148 185,150 170,198 130,210' fill='%23bfb0ca'/><polygon points='80,190 48,218 100,210' fill='%23b6b24a'/><polygon points='122,210 112,250 142,218' fill='%239a8a70'/><polygon points='150,210 148,250 168,214' fill='%239a8a70'/><polygon points='158,38 165,34 172,38 170,46 164,50 157,46' fill='%233a4a58'/><circle cx='105' cy='155' r='35' fill='%235680a6'/><circle cx='105' cy='155' r='25' fill='%239c9462'/><circle cx='105' cy='155' r='16' fill='%23c4bca0'/><circle cx='105' cy='155' r='8' fill='%235680a6'/></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux Whisper · Speech to text for Linux</title>
+<meta name="description" content="Speech to text for Linux that runs on your own computer. No cloud. No tracking.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpolygon points='155,8 120,35 150,55' fill='%23a0d8bc'/%3E%3Cpolygon points='155,8 190,28 150,55' fill='%238ecaae'/%3E%3Cpolygon points='120,35 150,55 105,68' fill='%2368b294'/%3E%3Cpolygon points='150,55 190,28 182,60' fill='%2378bca0'/%3E%3Cpolygon points='190,28 215,38 192,55' fill='%23d8ca8a'/%3E%3Cpolygon points='105,68 150,55 182,60 180,98 95,90' fill='%2356a08e'/%3E%3Cpolygon points='95,90 180,98 115,148' fill='%236a9eaa'/%3E%3Cpolygon points='95,90 50,130 115,148' fill='%237aa2bc'/%3E%3Cpolygon points='50,130 18,185 80,190 115,148' fill='%2384acc4'/%3E%3Cpolygon points='180,98 182,60 185,150' fill='%23589288'/%3E%3Cpolygon points='180,98 185,150 115,148' fill='%236a9e98'/%3E%3Cpolygon points='115,148 80,190 130,210' fill='%23b2a6c2'/%3E%3Cpolygon points='115,148 185,150 170,198 130,210' fill='%23bfb0ca'/%3E%3Cpolygon points='100,208 88,248 112,218' fill='%23d8ca8a'/%3E%3Cpolygon points='125,210 120,248 142,218' fill='%23d8ca8a'/%3E%3Ccircle cx='164' cy='42' r='4' fill='%231a1a1a'/%3E%3C/svg%3E">
+<script>
+  // The page follows the system's light or dark setting until the switch is used.
+  // Done before the page is drawn, so it never flashes.
+  try {
+    var saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") document.documentElement.setAttribute("data-theme", saved);
+  } catch (e) {}
+</script>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+  /* The fonts are served from this site. Their licenses are in the fonts folder. */
+  @font-face {
+    font-family: "Bricolage Grotesque";
+    font-weight: 500 800;
+    font-stretch: 75% 100%;
+    font-display: swap;
+    src: url("fonts/BricolageGrotesque.woff2") format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Mono";
+    font-weight: 500;
+    font-display: swap;
+    src: url("fonts/IBMPlexMono-Medium.woff2") format("woff2");
+  }
 
-:root {
-  --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Source Code Pro', monospace;
-}
+  :root {
+    --bg: #f1eee6;
+    --ink: #0d0d0d;
+    --dim: #57544c;
+    --line: #cbc7ba;
+    --soft: #e3dfd3;
+    --accent: #4b2ff2;
+    --on-accent: #ffffff;
+    --rule: 3px;   /* the thickness of the rules */
+    --edge: 18px;  /* the space between the menu and the rule under it */
+    --pad: 28px;   /* the page's side margins */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0d0d0d; --ink: #f1eee6; --dim: #a5a299; --line: #3a3934; --soft: #22211e; --accent: #cdfa3c; --on-accent: #0d0d0d; }
+  }
+  :root[data-theme="dark"] { --bg: #0d0d0d; --ink: #f1eee6; --dim: #a5a299; --line: #3a3934; --soft: #22211e; --accent: #cdfa3c; --on-accent: #0d0d0d; }
 
-[data-theme="dark"] {
-  --bg: #0a0e14;
-  --bg-secondary: #0d1117;
-  --bg-terminal: #000000;
-  --text: #b0b8c0;
-  --text-bright: #d8dee4;
-  --accent: #4ae68a;
-  --accent-dim: rgba(74, 230, 138, 0.2);
-  --accent2: #3ac8a0;
-  --accent3: #56d4ef;
-  --border: #1a2636;
-  --comment: #5c6a78;
-  --copy-bg: #1a1f2e;
-  --copy-hover: #2a3040;
-  --link: #4ae68a;
-  --scanline: rgba(74, 230, 138, 0.02);
-  --icon-color: #4ae68a;
-  --section-accent: #3ac8a0;
-}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 18px; scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Bricolage Grotesque", system-ui, sans-serif;
+    font-weight: 500;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.25s, color 0.25s;
+  }
+  a { color: inherit; }
+  .page { max-width: 1280px; margin: 0 auto; padding: 0 var(--pad) 64px; }
 
-[data-theme="light"] {
-  --bg: #f5f5f0;
-  --bg-secondary: #eaeae5;
-  --bg-terminal: #fafaf5;
-  --text: #2d2d2d;
-  --text-bright: #1a1a1a;
-  --accent: #1a7a4c;
-  --accent-dim: rgba(26, 122, 76, 0.12);
-  --accent2: #2a6a8c;
-  --accent3: #4a8a6c;
-  --border: #c0c0b0;
-  --comment: #7a7a6a;
-  --copy-bg: #e0e0d8;
-  --copy-hover: #d0d0c8;
-  --link: #1a7a4c;
-  --scanline: rgba(0, 0, 0, 0.02);
-  --icon-color: #1a7a4c;
-  --section-accent: #2a6a8c;
-}
+  /* Heavy narrow capitals */
+  .name, .lede, .go, h2, h3 {
+    font-weight: 800;
+    font-stretch: 75%;
+    text-transform: uppercase;
+    letter-spacing: 0.005em;
+    word-spacing: 0.08em;
+    line-height: 0.88;
+  }
+  /* Labels */
+  .bar, .roles, .contents, h2 span, h4, .steps b, .chips, .termbar, .facts dt, .box, footer a {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    font-weight: 500;
+    font-stretch: 100%;
+    letter-spacing: 0.12em;
+    word-spacing: 0;
+    text-transform: uppercase;
+    line-height: 1.5;
+  }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+  /* Top bar */
+  .bar { display: flex; justify-content: space-between; align-items: center; padding: var(--edge) 0; border-bottom: var(--rule) solid var(--ink); }
+  .bar a { text-decoration: none; }
+  .bar a:hover { text-decoration: underline; }
+  .bar nav { display: flex; gap: 26px; align-items: center; }
+  .switch { font: inherit; letter-spacing: inherit; text-transform: inherit; background: var(--ink); color: var(--bg); border: 0; padding: 8px 12px; cursor: pointer; }
+  .switch:hover { background: var(--accent); color: var(--on-accent); }
 
-html {
-  scroll-behavior: smooth;
-  font-size: 17px;
-}
+  /* Hero: the pigeon and the name as a tag, a very large sentence, then the download.
+     cqw is 1% of the hero's width. */
+  .hero { container-type: inline-size; padding-top: 36px; }
+  .tagrow { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
+  .tagrow svg { width: 46px; height: 46px; flex: none; }
+  .name { background: var(--accent); color: var(--on-accent); font-size: 1.5rem; line-height: 1; padding: 7px 12px 8px; }
+  .roles { color: var(--dim); }
+  .lede {
+    font-size: min(16vw, 199px);  /* for browsers that do not know cqw */
+    font-size: min(100cqw / 5.25, 199px);  /* the first line is 5.18 times the font size wide, so it always fits */
+    font-optical-sizing: none;  /* one drawing of the letters at every size, which keeps that width true */
+    line-height: 0.84;
+    white-space: nowrap;
+    margin-top: 30px;
+    margin-left: -0.02em;
+  }
+  .lede em { display: block; font-style: normal; color: var(--accent); }
+  .act {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px 30px;
+    margin-top: 40px;
+    padding: 20px 0;
+    border-top: var(--rule) solid var(--ink);
+    border-bottom: var(--rule) solid var(--ink);
+  }
+  .go { display: inline-flex; gap: 12px; flex: none; text-decoration: none; background: var(--ink); color: var(--bg); font-size: 1.6rem; line-height: 1; padding: 18px 24px 20px; transition: background 0.15s, color 0.15s; }
+  .go:hover { background: var(--accent); color: var(--on-accent); }
+  .lines { flex: 1 1 22em; font-size: 1.05rem; line-height: 1.45; }
+  .lines p + p { margin-top: 4px; }
 
-body {
-  font-family: var(--font);
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.7;
-  transition: background 0.3s, color 0.3s;
-  overflow-x: hidden;
-}
+  /* Links drawn as boxes: the contents list, and the links to GitHub */
+  .contents { margin-top: 20px; }
+  .contents ol { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; }
+  .contents a, .box { display: inline-block; text-decoration: none; border: var(--rule) solid var(--ink); padding: 7px 12px; }
+  .box.full { background: var(--ink); color: var(--bg); }
+  .contents a:hover, .box:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
-/* Scanline overlay */
-body::after {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  pointer-events: none;
-  z-index: 9999;
-  background: repeating-linear-gradient(
-    0deg,
-    var(--scanline) 0px,
-    var(--scanline) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-}
+  /* Sections: a numbered heading on a thick rule */
+  main h2 { display: flex; align-items: baseline; gap: 14px; margin: 80px 0 24px; padding-bottom: 12px; border-bottom: var(--rule) solid var(--ink); font-size: 1.6rem; line-height: 1; }
+  main h2 span { color: var(--dim); }
+  main > section > h3 { font-size: 1.35rem; margin: 40px 0 12px; }
+  main h2 + h3 { margin-top: 0; }
+  h4 { color: var(--dim); margin: 22px 0 8px; }
+  main section > p { max-width: 68ch; margin-bottom: 16px; }
+  main p a { text-decoration-thickness: 2px; text-underline-offset: 3px; }
+  main p a:hover { color: var(--accent); }
+  code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.84em; font-variant-ligatures: none; background: var(--soft); padding: 0.12em 0.4em; }
 
-a { color: var(--link); text-decoration: none; }
-a:hover { text-decoration: underline; }
+  /* How it works: four tiles. Each word hangs a fixed distance from the top, so the four line up. */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 20px; }
+  .steps article { min-height: 230px; padding: 18px 20px 20px; background: var(--ink); color: var(--bg); border: var(--rule) solid var(--ink); }
+  .steps article:nth-child(even) { background: var(--bg); color: var(--ink); }
+  .steps article:last-child { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .steps b { display: block; }
+  .steps h3 { font-size: 2.4rem; margin-top: 72px; }
+  .steps p { font-size: 0.9rem; line-height: 1.4; margin-top: 8px; }
 
-/* Theme toggle */
-.theme-toggle {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  z-index: 1000;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  padding: 0.4rem;
-  cursor: pointer;
-  color: var(--comment);
-  transition: all 0.3s;
-  line-height: 1;
-  font-size: 1.1rem;
-  width: 2.2rem;
-  height: 2.2rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.theme-toggle:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.theme-toggle .icon-sun,
-.theme-toggle .icon-moon { display: none; }
-[data-theme="light"] .theme-toggle .icon-moon { display: inline; }
-[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
+  /* Features and the audit's findings: short entries in two columns, divided by thin lines */
+  .entries { display: grid; grid-template-columns: 1fr 1fr; gap: 0 48px; margin-bottom: 20px; border-top: 1px solid var(--line); }
+  h2 + .entries { border-top: 0; margin-top: -8px; }
+  .entries article { padding: 20px 0 22px; border-bottom: 1px solid var(--line); }
+  .entries h3 { font-size: 1.7rem; }
+  .entries p { margin-top: 8px; max-width: 34em; }
 
-/* Container */
-.container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 1.5rem;
-}
+  /* The systems it works on */
+  .chips { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .chips li { border: var(--rule) solid var(--ink); padding: 7px 12px; }
 
-/* Hero */
-.hero {
-  padding: 6rem 0 4rem;
-  text-align: center;
-}
-.ascii-art {
-  color: var(--accent);
-  font-size: clamp(0.35rem, 1.2vw, 0.75rem);
-  line-height: 1.2;
-  white-space: pre;
-  display: inline-block;
-  text-align: left;
-  text-shadow: 0 0 10px var(--accent-dim);
-  overflow: hidden;
-  max-width: 100%;
-  -webkit-text-stroke: 0.3px var(--accent);
-  font-weight: 700;
-}
-.hero .tagline {
-  margin-top: 2rem;
-  font-size: 1rem;
-  color: var(--text);
-  max-width: 600px;
-  margin-left: auto;
-  margin-right: auto;
-}
-.hero .tagline em {
-  color: var(--accent);
-  font-style: normal;
-}
-.hero .version {
-  display: inline-block;
-  margin-top: 1rem;
-  padding: 0.2rem 0.6rem;
-  border: 1px solid var(--accent-dim);
-  color: var(--accent);
-  font-size: 0.75rem;
-}
+  /* Commands to paste into a terminal */
+  .terminal { max-width: 52rem; border: var(--rule) solid var(--ink); margin-bottom: 16px; }
+  .termbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 6px 6px 14px; border-bottom: var(--rule) solid var(--ink); color: var(--dim); }
+  .copy { font: inherit; letter-spacing: inherit; text-transform: inherit; background: var(--ink); color: var(--bg); border: 0; padding: 5px 10px; cursor: pointer; }
+  .copy:hover { background: var(--accent); color: var(--on-accent); }
+  .terminal pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.8rem; font-variant-ligatures: none; line-height: 1.6; padding: 14px 18px; overflow-x: auto; }
+  .cmt { color: var(--dim); }
 
-/* Typing cursor */
-.cursor {
-  display: inline-block;
-  width: 0.6em;
-  height: 1.1em;
-  background: var(--accent);
-  vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink {
-  50% { opacity: 0; }
-}
+  /* About: small facts */
+  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 32px; margin-bottom: 24px; }
+  .facts div { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .facts dt { color: var(--dim); }
+  .facts dd { font-size: 1.05rem; }
 
-/* Sections */
-section {
-  padding: 3rem 0;
-  border-top: 1px solid var(--border);
-}
-.section-header {
-  font-size: 1.1rem;
-  color: var(--accent);
-  margin-bottom: 1.5rem;
-  font-weight: 700;
-}
+  footer { margin-top: 88px; padding-top: 18px; border-top: var(--rule) solid var(--ink); display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px 24px; font-size: 0.8rem; color: var(--dim); }
+  footer a { color: var(--ink); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
 
-/* How it works - compact */
-.flow-list {
-  list-style: none;
-  padding: 0;
-}
-.flow-list li {
-  padding: 0.15rem 0;
-  padding-left: 2rem;
-  position: relative;
-  color: var(--text);
-  font-size: 0.85rem;
-}
-.flow-list li::before {
-  content: '>';
-  position: absolute;
-  left: 0;
-  color: var(--accent);
-  font-weight: 700;
-}
-.flow-list li strong { color: var(--text-bright); }
-.flow-list li em { color: var(--accent2); font-style: normal; }
-
-/* Accordion cards (Features + Security) */
-.accordion-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 0.5rem;
-}
-.accordion-card {
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-  transition: border-color 0.3s;
-  overflow: hidden;
-}
-.accordion-card:hover {
-  border-color: var(--accent-dim);
-}
-.accordion-header {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.7rem 0.9rem;
-  cursor: pointer;
-  user-select: none;
-  font-size: 0.82rem;
-  color: var(--text-bright);
-  transition: color 0.2s;
-}
-.accordion-header:hover { color: var(--accent); }
-.accordion-icon {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  stroke: var(--icon-color);
-  stroke-width: 1.5;
-  fill: none;
-  opacity: 0.8;
-}
-.accordion-label { flex: 1; }
-.accordion-chevron {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  stroke: var(--comment);
-  stroke-width: 2;
-  fill: none;
-  transition: transform 0.25s;
-}
-.accordion-card.open .accordion-chevron,
-.audit-item.open .accordion-chevron {
-  transform: rotate(90deg);
-}
-.accordion-body {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.3s ease;
-}
-.accordion-body-inner {
-  padding: 0 0.9rem 0.7rem 2.8rem;
-  font-size: 0.78rem;
-  color: var(--comment);
-  line-height: 1.6;
-}
-
-/* Platform list */
-.platform-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 0;
-}
-.platform-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  padding: 0.6rem 0;
-}
-.platform-icon {
-  width: 18px;
-  height: 18px;
-  stroke: var(--icon-color);
-  stroke-width: 1.5;
-  fill: none;
-  flex-shrink: 0;
-  opacity: 0.8;
-}
-.platform-item strong { color: var(--text-bright); }
-
-/* Audit list (vertical) */
-.audit-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-.audit-item {
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  overflow: hidden;
-}
-.audit-item:first-child {
-  border-top: 1px solid var(--border);
-}
-.audit-item:last-child {
-  border-bottom: none;
-}
-.audit-item .accordion-header {
-  padding: 0.6rem 0.4rem;
-}
-.audit-item .accordion-body-inner {
-  padding-bottom: 0.6rem;
-}
-
-/* Terminal blocks */
-.terminal {
-  background: var(--bg-terminal);
-  border: 1px solid var(--border);
-  margin: 1rem 0;
-  position: relative;
-  overflow: hidden;
-}
-.terminal-bar {
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
-  padding: 0.3rem 0.8rem;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.7rem;
-  color: var(--comment);
-}
-.terminal-bar .term-title {
-  color: var(--comment);
-  font-size: 0.7rem;
-}
-.terminal-bar .term-title::before {
-  content: '>';
-  color: var(--accent);
-  margin-right: 0.4rem;
-  font-weight: 700;
-}
-.copy-btn {
-  background: var(--copy-bg);
-  border: 1px solid var(--border);
-  color: var(--comment);
-  padding: 0.2rem 0.5rem;
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: 0.65rem;
-  transition: all 0.2s;
-}
-.copy-btn:hover {
-  background: var(--copy-hover);
-  color: var(--accent);
-  border-color: var(--accent-dim);
-}
-.copy-btn.copied {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.terminal pre {
-  padding: 1rem;
-  overflow-x: auto;
-  font-size: 0.8rem;
-  line-height: 1.6;
-}
-.terminal .prompt { color: var(--accent); }
-.terminal .cmd { color: var(--text-bright); }
-.terminal .cmt { color: var(--comment); }
-
-/* About */
-.about-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
-  margin: 1rem 0;
-}
-.about-item {
-  padding: 0.5rem 0;
-  font-size: 0.85rem;
-}
-.about-item .label {
-  color: var(--comment);
-  font-size: 0.75rem;
-}
-.about-item .value {
-  color: var(--text-bright);
-}
-
-/* GitHub button */
-.gh-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-  padding: 0.6rem 1.2rem;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  font-family: var(--font);
-  font-size: 0.85rem;
-  transition: all 0.3s;
-  text-decoration: none;
-}
-.gh-btn:hover {
-  background: var(--accent);
-  color: var(--bg);
-  text-decoration: none;
-}
-
-/* Footer */
-footer {
-  padding: 2rem 0;
-  border-top: 1px solid var(--border);
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--comment);
-}
-
-/* Responsive */
-@media (max-width: 600px) {
-  .hero { padding: 4rem 0 2rem; }
-  .ascii-art { font-size: 0.3rem; }
-  .accordion-grid { grid-template-columns: 1fr; }
-  .about-grid { grid-template-columns: repeat(2, 1fr); }
-  .theme-toggle { top: 0.5rem; right: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.65rem; }
-}
+  @media (max-width: 860px) {
+    html { font-size: 17px; }
+    :root { --pad: 16px; }
+    .page { padding-bottom: 48px; }
+    .bar nav { gap: 14px; }
+    .hero { padding-top: 26px; }
+    .lede { margin-top: 22px; }
+    .act { margin-top: 28px; }
+    .go { font-size: 1.35rem; }
+    main h2 { margin-top: 60px; }
+    .steps { grid-template-columns: 1fr 1fr; }
+    .steps article { min-height: 190px; }
+    .steps h3 { font-size: 2rem; margin-top: 44px; }
+    .entries { grid-template-columns: 1fr; }
+    .facts { grid-template-columns: 1fr 1fr; }
+  }
 </style>
 </head>
 <body>
+<div class="page">
 
-<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark/light mode">
-  <span class="icon-sun">&#9728;</span>
-  <span class="icon-moon">&#9789;</span>
-</button>
+  <header class="bar">
+    <a href="https://kwap.io/">kwap.io</a>
+    <nav>
+      <a href="https://github.com/kwap/linux-whisper">Code</a>
+      <button class="switch" id="switch" type="button" aria-label="Switch between light and dark">dark</button>
+    </nav>
+  </header>
 
-<div class="container">
-
-  <!-- Hero -->
-  <section class="hero" style="border: none;">
-    <div class="ascii-art" aria-label="Linux Whisper ASCII art">
- _      _                    __        ___     _
-| |    (_)_ __  _   ___  __ \ \      / / |__ (_)___ _ __   ___ _ __
-| |    | | '_ \| | | \ \/ /  \ \ /\ / /| '_ \| / __| '_ \ / _ \ '__|
-| |___ | | | | | |_| |>  <    \ V  V / | | | | \__ \ |_) |  __/ |
-|_____|_|_| |_|\__,_/_/\_\    \_/\_/  |_| |_|_|___/ .__/ \___|_|
-                                                    |_|               </div>
-    <p class="tagline">
-      Local, privacy-focused speech-to-text for Linux.<br>
-      <em>No cloud. No tracking. Just whisper.</em><span class="cursor"></span>
-    </p>
-    <span class="version">v0.9.6</span>
-    <div style="margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap;">
-      <a href="https://github.com/kwap/linux-whisper/actions/workflows/ci.yml"><img src="https://github.com/kwap/linux-whisper/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-      <a href="https://github.com/kwap/linux-whisper/releases/latest"><img src="https://img.shields.io/github/v/release/kwap/linux-whisper?label=release" alt="Latest Release"></a>
-      <a href="https://github.com/kwap/linux-whisper/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License"></a>
+  <section class="hero">
+    <div class="tagrow">
+      <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><polygon points="155,8 120,35 150,55" fill="#a0d8bc"/><polygon points="155,8 190,28 150,55" fill="#8ecaae"/><polygon points="120,35 150,55 105,68" fill="#68b294"/><polygon points="150,55 190,28 182,60" fill="#78bca0"/><polygon points="190,28 215,38 192,55" fill="#d8ca8a"/><polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/><polygon points="95,90 180,98 115,148" fill="#6a9eaa"/><polygon points="95,90 50,130 115,148" fill="#7aa2bc"/><polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/><polygon points="180,98 182,60 185,150" fill="#589288"/><polygon points="180,98 185,150 115,148" fill="#6a9e98"/><polygon points="115,148 80,190 130,210" fill="#b2a6c2"/><polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/><polygon points="100,208 88,248 112,218" fill="#d8ca8a"/><polygon points="125,210 120,248 142,218" fill="#d8ca8a"/><circle cx="164" cy="42" r="4" fill="#1a1a1a"/></svg>
+      <h1 class="name">Linux Whisper</h1>
+      <p class="roles">v0.9.6 · Rust · GPLv3</p>
+    </div>
+    <p class="lede">Speech to text <em>for Linux.</em></p>
+    <div class="act">
+      <a class="go" href="https://github.com/kwap/linux-whisper/releases/latest">Download <span aria-hidden="true">→</span></a>
+      <div class="lines">
+        <p>Press a key, speak, and your words appear in the app you are using.</p>
+        <p>It all happens on your own computer. No cloud. No tracking.</p>
+      </div>
     </div>
   </section>
 
-  <!-- How It Works -->
+  <nav class="contents" aria-label="Contents">
+    <ol>
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#platforms">Works on</a></li>
+      <li><a href="#prerequisites">Before you install</a></li>
+      <li><a href="#installation">Install</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#about">About</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
   <section id="how-it-works">
-    <h2 class="section-header">How It Works</h2>
-    <div class="audit-list">
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-          <span class="accordion-label">Press a key. Speak. Your words appear.</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">One global hotkey triggers dictation. Speak naturally and your words are transcribed and pasted instantly. That's it.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <span class="accordion-label">Your voice never leaves your machine.</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">No cloud, no server, no one listening. All inference runs locally through whisper.cpp. Your audio stays on your hardware.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <span class="accordion-label">50+ languages. Switch mid-sentence.</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Whisper auto-detects the language you're speaking. Switch between languages naturally &mdash; it keeps up.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          <span class="accordion-label">One hotkey, any app. Text lands instantly.</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">System-wide evdev hotkey works in any application. Transcribed text is injected directly where your cursor is.</div></div>
-      </div>
+    <h2><span>01</span>How it works</h2>
+    <div class="steps">
+      <article><b>1</b><h3>Press a key.</h3><p>One hotkey starts dictation. It works in every app.</p></article>
+      <article><b>2</b><h3>Speak.</h3><p>Talk the way you normally do. Your voice is recorded on your own computer.</p></article>
+      <article><b>3</b><h3>It listens.</h3><p>Whisper turns your speech into text, on your computer.</p></article>
+      <article><b>4</b><h3>It types.</h3><p>The text is pasted where your cursor is.</p></article>
     </div>
+    <p>The speech recognition is done by <a href="https://github.com/ggerganov/whisper.cpp">whisper.cpp</a>. Nothing leaves your computer.</p>
   </section>
 
-  <!-- Features -->
   <section id="features">
-    <h2 class="section-header">Features</h2>
-    <div class="audit-list">
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <span class="accordion-label">System-Wide Hotkey Dictation</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Press a global hotkey anywhere, speak, and text auto-pastes into your focused window. Works across all apps.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-          <span class="accordion-label">Audio File Transcription</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Open WAV, MP3, OGG, M4A, OPUS, FLAC, or MP4 files. Get a timestamped transcript with searchable segments.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          <span class="accordion-label">Export to TXT, SRT, VTT, CSV</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Save transcripts as subtitles for video, plain text for notes, or CSV for data analysis.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <span class="accordion-label">50+ Languages</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Switch languages mid-sentence. Whisper detects and transcribes seamlessly with zero configuration.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-          <span class="accordion-label">Smart Text Beautifier</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Automatic paragraph breaks, capitalization, and punctuation cleanup. Opt-in AI-powered formatting with a local LLM for even smarter results.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          <span class="accordion-label">CUDA GPU Acceleration</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Leverage your NVIDIA GPU for faster transcription. Falls back to CPU gracefully.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <span class="accordion-label">Privacy-Focused (Local Only)</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">All processing on your machine. No accounts, no telemetry, no cloud. Nothing leaves your computer.</div></div>
-      </div>
+    <h2><span>02</span>Features</h2>
+    <div class="entries">
+      <article><h3>Dictation in any app</h3><p>Press the hotkey anywhere and speak. The text is pasted into the window you are working in.</p></article>
+      <article><h3>Audio files</h3><p>Open a WAV, MP3, OGG, M4A, OPUS, FLAC or MP4 file and get a transcript with time stamps that you can search.</p></article>
+      <article><h3>Export</h3><p>Save a transcript as TXT, SRT, VTT or CSV: plain text for notes, subtitles for video, a table for analysis.</p></article>
+      <article><h3>50+ languages</h3><p>The language is detected by itself, with nothing to set up. You can switch language in the middle of a sentence.</p></article>
+      <article><h3>Tidy text</h3><p>Paragraphs, capital letters and punctuation are cleaned up for you. If you turn it on, a language model on your own computer polishes the text further.</p></article>
+      <article><h3>Faster with NVIDIA</h3><p>An NVIDIA graphics card speeds up transcription (CUDA). Without one, the processor does the work.</p></article>
+      <article><h3>Private</h3><p>Everything is processed on your computer. No account, no telemetry, no cloud.</p></article>
     </div>
   </section>
 
-  <!-- Supported Platforms -->
   <section id="platforms">
-    <h2 class="section-header">Supported Platforms</h2>
-    <div class="platform-list">
-      <div class="platform-item">
-        <svg class="platform-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5zm0 14c-2.5 0-4.71-1.28-6-3.22.03-2 4-3.08 6-3.08s5.97 1.08 6 3.08C16.71 17.72 14.5 19 12 19z"/></svg>
-        <span><strong>Pop!_OS 24.04</strong></span>
-      </div>
-      <div class="platform-item">
-        <svg class="platform-icon" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/><circle cx="12" cy="7" r="4"/></svg>
-        <span><strong>Ubuntu 24.04+</strong></span>
-      </div>
-      <div class="platform-item">
-        <svg class="platform-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-        <span><strong>Fedora 40+</strong></span>
-      </div>
-      <div class="platform-item">
-        <svg class="platform-icon" viewBox="0 0 24 24"><path d="M12 2L2 19h20L12 2z"/><path d="M12 8v6"/><circle cx="12" cy="16" r="0.5"/></svg>
-        <span><strong>Arch Linux</strong></span>
-      </div>
-      <div class="platform-item">
-        <svg class="platform-icon" viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="none" stroke-width="1.5"/><path d="M9 9h6v6H9z" fill="none" stroke-width="1.5"/></svg>
-        <span><strong>Debian 13+</strong></span>
-      </div>
-    </div>
+    <h2><span>03</span>Works on</h2>
+    <ul class="chips">
+      <li>Pop!_OS 24.04</li>
+      <li>Ubuntu 24.04+</li>
+      <li>Fedora 40+</li>
+      <li>Arch Linux</li>
+      <li>Debian 13+</li>
+    </ul>
+    <p>On Wayland and on X11.</p>
   </section>
 
-  <!-- Prerequisites -->
   <section id="prerequisites">
-    <h2 class="section-header">Prerequisites</h2>
-    <p style="margin-bottom: 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--section-accent);">Ubuntu / Pop!_OS / Debian:</p>
+    <h2><span>04</span>Before you install</h2>
+    <p>Install what Linux Whisper needs. Pick the block for your system.</p>
 
+    <h4>Ubuntu, Pop!_OS, Debian</h4>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="cmt"># Build tools and GTK4/libadwaita development libraries</span>
-<span class="prompt">$</span> <span class="cmd">sudo apt install build-essential cmake libgtk-4-dev libadwaita-1-dev</span>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre><span class="cmt"># Build tools, and the GTK4 and libadwaita libraries</span>
+sudo apt install build-essential cmake libgtk-4-dev libadwaita-1-dev
 
-<span class="cmt"># Audio capture (ALSA development headers)</span>
-<span class="prompt">$</span> <span class="cmd">sudo apt install libasound2-dev</span>
+<span class="cmt"># Sound recording (ALSA)</span>
+sudo apt install libasound2-dev
 
-<span class="cmt"># Wayland clipboard and text injection (for auto-paste)</span>
-<span class="prompt">$</span> <span class="cmd">sudo apt install wtype wl-clipboard</span>
+<span class="cmt"># Pasting the text on Wayland</span>
+sudo apt install wtype wl-clipboard
 
-<span class="cmt"># Global hotkeys — add yourself to the input group (reboot required)</span>
-<span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span>
+<span class="cmt"># The hotkey: add yourself to the "input" group, then restart the computer</span>
+sudo usermod -aG input $USER
 
-<span class="cmt"># Rust toolchain (if not already installed)</span>
-<span class="prompt">$</span> <span class="cmd">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</span></pre>
+<span class="cmt"># Rust, if you do not have it yet</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</pre>
     </div>
 
-    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--section-accent);">Fedora:</p>
-
+    <h4>Fedora</h4>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="prompt">$</span> <span class="cmd">sudo dnf install gcc cmake gtk4-devel libadwaita-devel alsa-lib-devel wtype wl-clipboard</span>
-<span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span></pre>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre>sudo dnf install gcc cmake gtk4-devel libadwaita-devel alsa-lib-devel wtype wl-clipboard
+sudo usermod -aG input $USER</pre>
     </div>
 
-    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--section-accent);">Arch Linux:</p>
-
+    <h4>Arch Linux</h4>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="prompt">$</span> <span class="cmd">sudo pacman -S base-devel cmake gtk4 libadwaita alsa-lib wtype wl-clipboard</span>
-<span class="prompt">$</span> <span class="cmd">sudo usermod -aG input $USER</span></pre>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre>sudo pacman -S base-devel cmake gtk4 libadwaita alsa-lib wtype wl-clipboard
+sudo usermod -aG input $USER</pre>
     </div>
   </section>
 
-  <!-- Installation -->
   <section id="installation">
-    <h2 class="section-header">Installation from Source</h2>
-    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Clone the repository and build:</p>
+    <h2><span>05</span>Install</h2>
 
+    <h3>A ready-made package</h3>
+    <p>Download the latest <code>.deb</code> package or the tarball from the releases page.</p>
+    <p><a class="box full" href="https://github.com/kwap/linux-whisper/releases/latest">Latest release →</a></p>
+
+    <h3>From the source</h3>
+    <p>Download the code and build it:</p>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="prompt">$</span> <span class="cmd">git clone https://github.com/kwap/linux-whisper.git</span>
-<span class="prompt">$</span> <span class="cmd">cd linux-whisper</span>
-<span class="prompt">$</span> <span class="cmd">cargo build --release</span></pre>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre>git clone https://github.com/kwap/linux-whisper.git
+cd linux-whisper
+cargo build --release</pre>
     </div>
 
-    <p style="margin: 1.5rem 0 1rem; font-size: 0.85rem;">Install system-wide:</p>
-
+    <p>Install it for everyone on the computer:</p>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="cmt"># Copy binary</span>
-<span class="prompt">$</span> <span class="cmd">sudo cp target/release/linux-whisper /usr/local/bin/</span>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre><span class="cmt"># The program</span>
+sudo cp target/release/linux-whisper /usr/local/bin/
 
-<span class="cmt"># Install desktop entry</span>
-<span class="prompt">$</span> <span class="cmd">APP=com.linuxwhisper.LinuxWhisper</span>
-<span class="prompt">$</span> <span class="cmd">sudo cp data/$APP.desktop /usr/share/applications/</span>
-<span class="prompt">$</span> <span class="cmd">sudo cp data/icons/hicolor/scalable/apps/$APP.svg \</span>
-<span class="cmd">  /usr/share/icons/hicolor/scalable/apps/</span>
+<span class="cmt"># Its entry in the applications menu, and its icon</span>
+APP=com.linuxwhisper.LinuxWhisper
+sudo cp data/$APP.desktop /usr/share/applications/
+sudo cp data/icons/hicolor/scalable/apps/$APP.svg \
+  /usr/share/icons/hicolor/scalable/apps/
 
-<span class="cmt"># Update icon cache</span>
-<span class="prompt">$</span> <span class="cmd">sudo gtk-update-icon-cache /usr/share/icons/hicolor/</span></pre>
+<span class="cmt"># Refresh the icons</span>
+sudo gtk-update-icon-cache /usr/share/icons/hicolor/</pre>
     </div>
 
-    <p style="margin: 1.5rem 0 1rem; font-size: 0.85rem;">Or use <a href="https://github.com/casey/just">just</a> for a one-liner:</p>
-
+    <p>Or let <a href="https://github.com/casey/just">just</a> do both:</p>
     <div class="terminal">
-      <div class="terminal-bar">
-        <span class="term-title">terminal</span>
-        <button class="copy-btn" onclick="copyBlock(this)">copy</button>
-      </div>
-      <pre><span class="prompt">$</span> <span class="cmd">just release</span>
-<span class="prompt">$</span> <span class="cmd">just install</span></pre>
+      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
+<pre>just release
+just install</pre>
     </div>
 
-    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem;">On first run, Linux Whisper will prompt you to download a Whisper model. You can change the model size in Preferences at any time.</p>
-
-    <p style="margin: 1.5rem 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--section-accent);">Pre-built packages:</p>
-    <p style="font-size: 0.8rem; color: var(--comment); margin-bottom: 0.8rem;">Download the latest <code>.deb</code> package or binary tarball from GitHub Releases:</p>
-    <a href="https://github.com/kwap/linux-whisper/releases/latest" class="gh-btn" target="_blank" rel="noopener">
-      &#8681; Download Latest Release
-    </a>
-
+    <h3>The first start</h3>
+    <p>Linux Whisper asks to download a Whisper model. You can choose another model size in Preferences at any time.</p>
   </section>
 
-  <!-- Security -->
   <section id="security">
-    <h2 class="section-header">Security Audit</h2>
-    <p style="margin-bottom: 1rem; font-size: 0.85rem;">Comprehensive audit across all six crates and the CI/CD pipeline. Clean and safe to distribute.</p>
-    <div class="audit-list">
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-          <span class="accordion-label">Zero Unsafe Code</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">No <code>unsafe</code> blocks in the entire codebase. All FFI goes through safe whisper-rs wrapper bindings.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          <span class="accordion-label">No Data Exfiltration</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">No telemetry, analytics, or tracking. Only HTTPS model downloads from HuggingFace. Transcriptions never leave your machine.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <span class="accordion-label">SHA-256 Model Verification</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Downloads verified against known SHA-256 hashes. Corrupt or tampered files rejected.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
-          <span class="accordion-label">No Command Injection</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">External tools invoked with safe argument passing and stdin piping. No shell interpolation of user input.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <span class="accordion-label">Not a Keylogger</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">Evdev hotkey listener tracks only the configured combo. Does not capture, log, or transmit any other keystrokes.</div></div>
-      </div>
-      <div class="audit-item" onclick="toggleCard(this.querySelector('.accordion-header'))">
-        <div class="accordion-header">
-          <svg class="accordion-icon" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-          <span class="accordion-label">Pinned Supply Chain</span>
-          <svg class="accordion-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-        </div>
-        <div class="accordion-body"><div class="accordion-body-inner" style="padding-left: 2.6rem;">All CI/CD Actions and build tools pinned to commit hashes with integrity checks. No unpinned third-party code.</div></div>
-      </div>
+    <h2><span>06</span>Security</h2>
+    <p>A security audit covered all six crates of the code and the build pipeline. It found the project clean and safe to distribute.</p>
+    <div class="entries">
+      <article><h3>No unsafe code</h3><p>There is no <code>unsafe</code> block anywhere in the code. Whisper is called through the safe whisper-rs bindings.</p></article>
+      <article><h3>Nothing is sent out</h3><p>No telemetry, analytics or tracking. The only download is the model, over HTTPS from Hugging Face. Your transcripts never leave your computer.</p></article>
+      <article><h3>Checked downloads</h3><p>A downloaded model is compared with its known SHA-256 hash. A damaged or altered file is rejected.</p></article>
+      <article><h3>No command injection</h3><p>Other programs are started with safe arguments and get their input through a pipe. What you say or type is never put into a shell command.</p></article>
+      <article><h3>Not a keylogger</h3><p>The hotkey listener watches only for the hotkey you set. It does not record, store or send any other key.</p></article>
+      <article><h3>Pinned build tools</h3><p>Every build step on GitHub is pinned to an exact commit and checked. No unpinned code from others.</p></article>
     </div>
-    <p style="margin-top: 1rem; font-size: 0.78rem; color: var(--comment);">Covers: backdoors, data exfiltration, credential theft, file system abuse, privilege escalation, unsafe FFI, command injection, XSS, dependency supply chain, CI/CD pipeline.</p>
+    <p>The audit looked for: back doors, data leaving the computer, stolen credentials, misuse of files, gaining extra rights, unsafe calls into other code, command injection, script injection (XSS), the supply chain of the dependencies, and the build pipeline.</p>
   </section>
 
-  <!-- About -->
   <section id="about">
-    <h2 class="section-header">About</h2>
-    <div class="about-grid">
-      <div class="about-item">
-        <div class="label">language</div>
-        <div class="value">Rust</div>
-      </div>
-      <div class="about-item">
-        <div class="label">license</div>
-        <div class="value">GPLv3</div>
-      </div>
-      <div class="about-item">
-        <div class="label">inference</div>
-        <div class="value">whisper.cpp / whisper-rs</div>
-      </div>
-      <div class="about-item">
-        <div class="label">toolkit</div>
-        <div class="value">GTK4 / libadwaita</div>
-      </div>
-      <div class="about-item">
-        <div class="label">audio</div>
-        <div class="value">CPAL</div>
-      </div>
-      <div class="about-item">
-        <div class="label">platform</div>
-        <div class="value">Linux (Wayland + X11)</div>
-      </div>
-    </div>
-
-    <a href="https://github.com/kwap/linux-whisper" class="gh-btn" target="_blank" rel="noopener">
-      &#9733; Star on GitHub
-    </a>
+    <h2><span>07</span>About</h2>
+    <dl class="facts">
+      <div><dt>Language</dt><dd>Rust</dd></div>
+      <div><dt>License</dt><dd>GPLv3</dd></div>
+      <div><dt>Speech recognition</dt><dd>whisper.cpp, through whisper-rs</dd></div>
+      <div><dt>Interface</dt><dd>GTK4 and libadwaita</dd></div>
+      <div><dt>Audio</dt><dd>CPAL</dd></div>
+      <div><dt>Display</dt><dd>Wayland and X11</dd></div>
+    </dl>
+    <p><a class="box full" href="https://github.com/kwap/linux-whisper">Code on GitHub →</a></p>
   </section>
+
+  </main>
 
   <footer>
-    <p><span class="prompt" style="color: var(--accent);">$</span> echo "built with care for the linux desktop"</p>
-    <p style="margin-top: 0.5rem;">&copy; 2024-2026 Linux Whisper contributors &middot; GPLv3</p>
+    <p>Built with care for the Linux desktop · © 2024–2026 Linux Whisper contributors · GPLv3</p>
+    <a href="https://kwap.io/">kwap.io ↗</a>
   </footer>
 
 </div>
-
 <script>
-// Theme management
-function getTheme() {
-  return localStorage.getItem('lw-theme') || 'light';
-}
+  // The switch shows the look it changes to, and remembers the choice.
+  (function () {
+    var root = document.documentElement;
+    var button = document.getElementById("switch");
+    function current() {
+      return root.getAttribute("data-theme") || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    }
+    function label() { button.textContent = current() === "dark" ? "light" : "dark"; }
+    button.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("theme", next); } catch (e) {}
+      label();
+    });
+    label();
+  })();
 
-function setTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('lw-theme', theme);
-}
-
-function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme');
-  setTheme(current === 'dark' ? 'light' : 'dark');
-}
-
-// Initialize theme
-setTheme(getTheme());
-
-// Accordion toggle
-function toggleCard(header) {
-  // Support both accordion-card and audit-item parents
-  let card = header.parentElement;
-  if (card.classList.contains('audit-list')) card = header.closest('.audit-item');
-  if (!card) card = header.parentElement;
-  const body = card.querySelector('.accordion-body');
-  if (card.classList.contains('open')) {
-    card.classList.remove('open');
-    body.style.maxHeight = null;
-  } else {
-    card.classList.add('open');
-    body.style.maxHeight = body.scrollHeight + 'px';
-  }
-}
-
-// Copy to clipboard
-function copyBlock(btn) {
-  const pre = btn.closest('.terminal').querySelector('pre');
-  const lines = pre.textContent.split('\n');
-  const commands = lines
-    .map(l => l.trim())
-    .filter(l => l.startsWith('$'))
-    .map(l => l.replace(/^\$\s*/, ''));
-
-  const text = commands.join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    btn.textContent = 'copied!';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = 'copy';
-      btn.classList.remove('copied');
-    }, 2000);
+  // A copy button copies the commands of its block, without the comment lines.
+  document.querySelectorAll(".copy").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var lines = button.closest(".terminal").querySelector("pre").textContent.split("\n");
+      var commands = lines.filter(function (line) { return line.trim() !== "" && line.trim().charAt(0) !== "#"; });
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(commands.join("\n")).then(function () {
+        button.textContent = "copied";
+        setTimeout(function () { button.textContent = "copy"; }, 2000);
+      });
+    });
   });
-}
 </script>
-
 </body>
 </html>
