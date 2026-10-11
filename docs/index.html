@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,7 +7,7 @@
 <meta name="description" content="Speech to text for Linux that runs on your own computer. No cloud. No tracking.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpolygon points='155,8 120,35 150,55' fill='%23a0d8bc'/%3E%3Cpolygon points='155,8 190,28 150,55' fill='%238ecaae'/%3E%3Cpolygon points='120,35 150,55 105,68' fill='%2368b294'/%3E%3Cpolygon points='150,55 190,28 182,60' fill='%2378bca0'/%3E%3Cpolygon points='190,28 215,38 192,55' fill='%23d8ca8a'/%3E%3Cpolygon points='105,68 150,55 182,60 180,98 95,90' fill='%2356a08e'/%3E%3Cpolygon points='95,90 180,98 115,148' fill='%236a9eaa'/%3E%3Cpolygon points='95,90 50,130 115,148' fill='%237aa2bc'/%3E%3Cpolygon points='50,130 18,185 80,190 115,148' fill='%2384acc4'/%3E%3Cpolygon points='180,98 182,60 185,150' fill='%23589288'/%3E%3Cpolygon points='180,98 185,150 115,148' fill='%236a9e98'/%3E%3Cpolygon points='115,148 80,190 130,210' fill='%23b2a6c2'/%3E%3Cpolygon points='115,148 185,150 170,198 130,210' fill='%23bfb0ca'/%3E%3Cpolygon points='100,208 88,248 112,218' fill='%23d8ca8a'/%3E%3Cpolygon points='125,210 120,248 142,218' fill='%23d8ca8a'/%3E%3Ccircle cx='164' cy='42' r='4' fill='%231a1a1a'/%3E%3C/svg%3E">
 <script>
-  // The page follows the system's light or dark setting until the switch is used.
+  // The page is light unless the visitor chose dark with the switch.
   // Done before the page is drawn, so it never flashes.
   try {
     var saved = localStorage.getItem("theme");
@@ -42,9 +42,6 @@
     --edge: 18px;  /* the space between the menu and the rule under it */
     --pad: 28px;   /* the page's side margins */
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) { --bg: #0d0d0d; --ink: #f1eee6; --dim: #a5a299; --line: #3a3934; --soft: #22211e; --accent: #cdfa3c; --on-accent: #0d0d0d; }
-  }
   :root[data-theme="dark"] { --bg: #0d0d0d; --ink: #f1eee6; --dim: #a5a299; --line: #3a3934; --soft: #22211e; --accent: #cdfa3c; --on-accent: #0d0d0d; }
 
   /* Blocks of commands use the colours of the Tokyo Night theme: its light variant on the light page and its
@@ -52,12 +49,6 @@
   :root {
     --t-bg: #e6e7ed; --t-bar: #d6d8df; --t-fg: #343b59; --t-comment: #6c6e75; --t-command: #2959aa;
     --t-keyword: #65359d; --t-option: #8f5e15; --t-string: #385f0d; --t-variable: #8c4351; --t-operator: #006c86;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --t-bg: #1a1b26; --t-bar: #16161e; --t-fg: #a9b1d6; --t-comment: #646e9c; --t-command: #7aa2f7;
-      --t-keyword: #bb9af7; --t-option: #e0af68; --t-string: #9ece6a; --t-variable: #f7768e; --t-operator: #89ddff;
-    }
   }
   :root[data-theme="dark"] {
     --t-bg: #1a1b26; --t-bar: #16161e; --t-fg: #a9b1d6; --t-comment: #646e9c; --t-command: #7aa2f7;
@@ -107,21 +98,31 @@
   .switch { font: inherit; letter-spacing: inherit; text-transform: inherit; background: var(--ink); color: var(--bg); border: 0; padding: 8px 12px; cursor: pointer; }
   .switch:hover { background: var(--accent); color: var(--on-accent); }
 
-  /* Hero: the pigeon and the name as a tag, a very large sentence, then the download.
+  /* Hero: the name as a tag; under it the pigeon beside a very large sentence; then the download.
      cqw is 1% of the hero's width. */
   .hero { container-type: inline-size; padding-top: 36px; }
   .tagrow { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
-  .tagrow svg { width: 46px; height: 46px; flex: none; }
   .name { background: var(--accent); color: var(--on-accent); font-size: 1.5rem; line-height: 1; padding: 7px 12px 8px; }
   .roles { color: var(--dim); }
+  /* The pigeon is as tall as the letters of the two lines, and the sentence takes the rest of the width.
+     --size is the sentence's font size: the hero's width, less the gap, shared between the first line
+     (5.18 times the font size wide) and the pigeon (1.5 times). */
+  .duo {
+    --gap: 36px;
+    --size: min(13vw, 176px);  /* for browsers that do not know cqw */
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: var(--gap);
+    margin-top: 30px;
+  }
+  @supports (width: 1cqw) { .duo { --size: min((100cqw - var(--gap)) / 6.75, 199px); } }
+  .duo svg { display: block; width: calc(var(--size) * 1.5); height: calc(var(--size) * 1.5); }
   .lede {
-    font-size: min(16vw, 199px);  /* for browsers that do not know cqw */
-    font-size: min(100cqw / 5.25, 199px);  /* the first line is 5.18 times the font size wide, so it always fits */
+    font-size: var(--size);
     font-optical-sizing: none;  /* one drawing of the letters at every size, which keeps that width true */
     line-height: 0.84;
     white-space: nowrap;
-    margin-top: 30px;
-    margin-left: -0.02em;
   }
   .lede em { display: block; font-style: normal; color: var(--accent); }
   .act {
@@ -220,7 +221,7 @@
     .page { padding-bottom: 48px; }
     .bar nav { gap: 14px; }
     .hero { padding-top: 26px; }
-    .lede { margin-top: 22px; }
+    .duo { --gap: 16px; margin-top: 22px; }
     .act { margin-top: 28px; }
     .go { font-size: 1.35rem; }
     main h2 { margin-top: 60px; }
@@ -245,11 +246,13 @@
 
   <section class="hero">
     <div class="tagrow">
-      <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><polygon points="155,8 120,35 150,55" fill="#a0d8bc"/><polygon points="155,8 190,28 150,55" fill="#8ecaae"/><polygon points="120,35 150,55 105,68" fill="#68b294"/><polygon points="150,55 190,28 182,60" fill="#78bca0"/><polygon points="190,28 215,38 192,55" fill="#d8ca8a"/><polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/><polygon points="95,90 180,98 115,148" fill="#6a9eaa"/><polygon points="95,90 50,130 115,148" fill="#7aa2bc"/><polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/><polygon points="180,98 182,60 185,150" fill="#589288"/><polygon points="180,98 185,150 115,148" fill="#6a9e98"/><polygon points="115,148 80,190 130,210" fill="#b2a6c2"/><polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/><polygon points="100,208 88,248 112,218" fill="#d8ca8a"/><polygon points="125,210 120,248 142,218" fill="#d8ca8a"/><circle cx="164" cy="42" r="4" fill="#1a1a1a"/></svg>
       <h1 class="name">Linux Whisper</h1>
       <p class="roles">v0.9.6 · Rust · GPLv3</p>
     </div>
-    <p class="lede">Speech to text <em>for Linux.</em></p>
+    <div class="duo">
+      <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><polygon points="155,8 120,35 150,55" fill="#a0d8bc"/><polygon points="155,8 190,28 150,55" fill="#8ecaae"/><polygon points="120,35 150,55 105,68" fill="#68b294"/><polygon points="150,55 190,28 182,60" fill="#78bca0"/><polygon points="190,28 215,38 192,55" fill="#d8ca8a"/><polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/><polygon points="95,90 180,98 115,148" fill="#6a9eaa"/><polygon points="95,90 50,130 115,148" fill="#7aa2bc"/><polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/><polygon points="180,98 182,60 185,150" fill="#589288"/><polygon points="180,98 185,150 115,148" fill="#6a9e98"/><polygon points="115,148 80,190 130,210" fill="#b2a6c2"/><polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/><polygon points="100,208 88,248 112,218" fill="#d8ca8a"/><polygon points="125,210 120,248 142,218" fill="#d8ca8a"/><circle cx="164" cy="42" r="4" fill="#1a1a1a"/></svg>
+      <p class="lede">Speech to text <em>for Linux.</em></p>
+    </div>
     <div class="act">
       <a class="go" href="https://github.com/kwap/linux-whisper/releases/latest">Download <span aria-hidden="true">→</span></a>
       <div class="lines">
@@ -413,7 +416,7 @@ just install</pre>
     var root = document.documentElement;
     var button = document.getElementById("switch");
     function current() {
-      return root.getAttribute("data-theme") || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      return root.getAttribute("data-theme");
     }
     function label() { button.textContent = current() === "dark" ? "light" : "dark"; }
     button.addEventListener("click", function () {
