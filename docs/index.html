@@ -47,6 +47,23 @@
   }
   :root[data-theme="dark"] { --bg: #0d0d0d; --ink: #f1eee6; --dim: #a5a299; --line: #3a3934; --soft: #22211e; --accent: #cdfa3c; --on-accent: #0d0d0d; }
 
+  /* Blocks of commands use the colours of the Tokyo Night theme: its light variant on the light page and its
+     dark one on the dark page. */
+  :root {
+    --t-bg: #e6e7ed; --t-bar: #d6d8df; --t-fg: #343b59; --t-comment: #6c6e75; --t-command: #2959aa;
+    --t-keyword: #65359d; --t-option: #8f5e15; --t-string: #385f0d; --t-variable: #8c4351; --t-operator: #006c86;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --t-bg: #1a1b26; --t-bar: #16161e; --t-fg: #a9b1d6; --t-comment: #646e9c; --t-command: #7aa2f7;
+      --t-keyword: #bb9af7; --t-option: #e0af68; --t-string: #9ece6a; --t-variable: #f7768e; --t-operator: #89ddff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --t-bg: #1a1b26; --t-bar: #16161e; --t-fg: #a9b1d6; --t-comment: #646e9c; --t-command: #7aa2f7;
+    --t-keyword: #bb9af7; --t-option: #e0af68; --t-string: #9ece6a; --t-variable: #f7768e; --t-operator: #89ddff;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { font-size: 18px; scroll-behavior: smooth; scroll-padding-top: 20px; }
   body {
@@ -160,13 +177,32 @@
   .chips { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
   .chips li { border: var(--rule) solid var(--ink); padding: 7px 12px; }
 
-  /* Commands to paste into a terminal */
-  .terminal { max-width: 52rem; border: var(--rule) solid var(--ink); margin-bottom: 16px; }
-  .termbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 6px 6px 14px; border-bottom: var(--rule) solid var(--ink); color: var(--dim); }
-  .copy { font: inherit; letter-spacing: inherit; text-transform: inherit; background: var(--ink); color: var(--bg); border: 0; padding: 5px 10px; cursor: pointer; }
-  .copy:hover { background: var(--accent); color: var(--on-accent); }
-  .terminal pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.8rem; font-variant-ligatures: none; line-height: 1.6; padding: 14px 18px; overflow-x: auto; }
-  .cmt { color: var(--dim); }
+  /* A block of commands. The script at the end of the page puts each one in a "terminal" with a bar on top. */
+  pre {
+    max-width: 52rem;
+    margin-bottom: 16px;
+    border: var(--rule) solid var(--ink);
+    background: var(--t-bg);
+    color: var(--t-fg);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem;
+    font-variant-ligatures: none;
+    line-height: 1.6;
+    padding: 14px 18px;
+    overflow-x: auto;
+  }
+  .terminal { max-width: 52rem; margin-bottom: 16px; border: var(--rule) solid var(--ink); background: var(--t-bg); }
+  .terminal pre { max-width: none; margin: 0; border: 0; }
+  .termbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 6px 6px 14px; background: var(--t-bar); color: var(--t-comment); }
+  .copy { font: inherit; letter-spacing: inherit; text-transform: inherit; background: var(--t-command); color: var(--t-bg); border: 0; padding: 5px 10px; cursor: pointer; }
+  .copy:hover { background: var(--t-fg); }
+  .t-comment { color: var(--t-comment); }
+  .t-command { color: var(--t-command); }
+  .t-keyword { color: var(--t-keyword); }
+  .t-option { color: var(--t-option); }
+  .t-string { color: var(--t-string); }
+  .t-variable { color: var(--t-variable); }
+  .t-operator { color: var(--t-operator); }
 
   /* About: small facts */
   .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 32px; margin-bottom: 24px; }
@@ -278,37 +314,28 @@
     <p>Install what Linux Whisper needs. Pick the block for your system.</p>
 
     <h4>Ubuntu, Pop!_OS, Debian</h4>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
-<pre><span class="cmt"># Build tools, and the GTK4 and libadwaita libraries</span>
+<pre># Build tools, and the GTK4 and libadwaita libraries
 sudo apt install build-essential cmake libgtk-4-dev libadwaita-1-dev
 
-<span class="cmt"># Sound recording (ALSA)</span>
+# Sound recording (ALSA)
 sudo apt install libasound2-dev
 
-<span class="cmt"># Pasting the text on Wayland</span>
+# Pasting the text on Wayland
 sudo apt install wtype wl-clipboard
 
-<span class="cmt"># The hotkey: add yourself to the "input" group, then restart the computer</span>
+# The hotkey: add yourself to the "input" group, then restart the computer
 sudo usermod -aG input $USER
 
-<span class="cmt"># Rust, if you do not have it yet</span>
+# Rust, if you do not have it yet
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</pre>
-    </div>
 
     <h4>Fedora</h4>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
 <pre>sudo dnf install gcc cmake gtk4-devel libadwaita-devel alsa-lib-devel wtype wl-clipboard
 sudo usermod -aG input $USER</pre>
-    </div>
 
     <h4>Arch Linux</h4>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
 <pre>sudo pacman -S base-devel cmake gtk4 libadwaita alsa-lib wtype wl-clipboard
 sudo usermod -aG input $USER</pre>
-    </div>
   </section>
 
   <section id="installation">
@@ -320,35 +347,26 @@ sudo usermod -aG input $USER</pre>
 
     <h3>From the source</h3>
     <p>Download the code and build it:</p>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
 <pre>git clone https://github.com/kwap/linux-whisper.git
 cd linux-whisper
 cargo build --release</pre>
-    </div>
 
     <p>Install it for everyone on the computer:</p>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
-<pre><span class="cmt"># The program</span>
+<pre># The program
 sudo cp target/release/linux-whisper /usr/local/bin/
 
-<span class="cmt"># Its entry in the applications menu, and its icon</span>
+# Its entry in the applications menu, and its icon
 APP=com.linuxwhisper.LinuxWhisper
 sudo cp data/$APP.desktop /usr/share/applications/
 sudo cp data/icons/hicolor/scalable/apps/$APP.svg \
   /usr/share/icons/hicolor/scalable/apps/
 
-<span class="cmt"># Refresh the icons</span>
+# Refresh the icons
 sudo gtk-update-icon-cache /usr/share/icons/hicolor/</pre>
-    </div>
 
     <p>Or let <a href="https://github.com/casey/just">just</a> do both:</p>
-    <div class="terminal">
-      <div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>
 <pre>just release
 just install</pre>
-    </div>
 
     <h3>The first start</h3>
     <p>Linux Whisper asks to download a Whisper model. You can choose another model size in Preferences at any time.</p>
@@ -407,18 +425,77 @@ just install</pre>
     label();
   })();
 
-  // A copy button copies the commands of its block, without the comment lines.
-  document.querySelectorAll(".copy").forEach(function (button) {
-    button.addEventListener("click", function () {
-      var lines = button.closest(".terminal").querySelector("pre").textContent.split("\n");
-      var commands = lines.filter(function (line) { return line.trim() !== "" && line.trim().charAt(0) !== "#"; });
-      if (!navigator.clipboard) return;
-      navigator.clipboard.writeText(commands.join("\n")).then(function () {
-        button.textContent = "copied";
-        setTimeout(function () { button.textContent = "copy"; }, 2000);
+  // Blocks of commands become terminals: a bar with a copy button, and the commands coloured by what each
+  // word is. Without this script they stay plain blocks in the same colours.
+  (function () {
+    function escape(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function part(kind, text) { return '<span class="t-' + kind + '">' + escape(text) + "</span>"; }
+
+    // Returns the commands as HTML, each word wrapped by what it is: a comment, a program's name, an option, ...
+    function coloured(text) {
+      var continued = false;  // the line before ended with a backslash, so this line carries its command on
+      return text.split("\n").map(function (line) {
+        if (/^\s*#/.test(line)) return part("comment", line);
+        // In turn: spaces, a quoted text, a variable, a sign that joins commands, any other run of characters.
+        var pieces = /(\s+)|("[^"]*"|'[^']*')|(\$\w+|\$\{[^}]*\})|(\|\||&&|[|;\\])|([^\s"'$|;\\]+)/g;
+        var out = "", piece, atStart = true, wantsCommand = !continued;
+        while ((piece = pieces.exec(line))) {
+          if (piece[1]) { out += piece[1]; atStart = true; continue; }
+          if (piece[2]) {
+            out += part("string", piece[2]);
+            wantsCommand = false;
+          } else if (piece[3]) {
+            out += part("variable", piece[3]);
+            wantsCommand = false;
+          } else if (piece[4]) {
+            out += part("operator", piece[4]);
+            if (piece[4] !== "\\") wantsCommand = true;
+          } else {
+            var word = piece[5], setting = /^(\w+)=(.*)$/.exec(word);
+            if (wantsCommand && atStart && setting) {
+              out += part("variable", setting[1]) + part("operator", "=") + escape(setting[2]);
+              wantsCommand = false;
+            } else if (wantsCommand && atStart && word === "sudo") {
+              out += part("keyword", word);  // the program's name comes after it
+            } else if (wantsCommand && atStart) {
+              out += part("command", word);
+              wantsCommand = false;
+            } else if (atStart && word.charAt(0) === "-") {
+              out += part("option", word);
+            } else {
+              out += escape(word);
+            }
+          }
+          atStart = false;
+        }
+        continued = /\\\s*$/.test(line);
+        return out;
+      }).join("\n");
+    }
+
+    document.querySelectorAll("main pre").forEach(function (pre) {
+      var text = pre.textContent.replace(/\n+$/, "");
+      var terminal = document.createElement("div");
+      terminal.className = "terminal";
+      terminal.innerHTML =
+        '<div class="termbar"><span>terminal</span><button class="copy" type="button">copy</button></div>';
+      pre.parentNode.insertBefore(terminal, pre);
+      terminal.appendChild(pre);
+      pre.innerHTML = coloured(text);
+      // The button copies the commands without the comment lines.
+      terminal.querySelector(".copy").addEventListener("click", function () {
+        var button = this;
+        var commands = text.split("\n").filter(function (line) {
+          return line.trim() !== "" && line.trim().charAt(0) !== "#";
+        });
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(commands.join("\n")).then(function () {
+          button.textContent = "copied";
+          setTimeout(function () { button.textContent = "copy"; }, 2000);
+        });
       });
     });
-  });
+  })();
 </script>
 </body>
 </html>
