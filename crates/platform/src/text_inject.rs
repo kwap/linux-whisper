@@ -233,17 +233,21 @@ impl TextInjector for UinputPaster {
                 dev.emit(&[InputEvent::new(EventType::KEY.0, code.code(), value)])
                     .map_err(|e| InjectError::InjectFailed(format!("virtual keyboard: {e}")))
             };
-            for &m in modifiers {
-                send(m, 1)?;
-            }
+            let pressed = modifiers
+                .iter()
+                .try_for_each(|&m| send(m, 1))
+                .and_then(|()| {
+                    std::thread::sleep(Duration::from_millis(20));
+                    send(key, 1)
+                });
             std::thread::sleep(Duration::from_millis(20));
-            send(key, 1)?;
-            std::thread::sleep(Duration::from_millis(20));
-            send(key, 0)?;
-            for &m in modifiers.iter().rev() {
-                send(m, 0)?;
-            }
-            Ok(())
+            // Always release everything, even after a failed press: the
+            // keyboard lives on, and a stuck Ctrl would affect all typing.
+            let released = std::iter::once(key)
+                .chain(modifiers.iter().rev().copied())
+                .map(|k| send(k, 0))
+                .fold(Ok(()), Result::and);
+            pressed.and(released)
         })
     }
 

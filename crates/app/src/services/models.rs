@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,26 @@ pub enum ModelEvent {
     Loading,
     Ready,
     Failed(String),
+    /// Downloaded, but not loaded because another model was chosen meanwhile.
+    Superseded,
 }
+
+impl ModelEvent {
+    /// Whether this is the last event of a request.
+    pub fn is_final(&self) -> bool {
+        matches!(
+            self,
+            ModelEvent::Ready | ModelEvent::Failed(_) | ModelEvent::Superseded
+        )
+    }
+}
+
+/// Number of the most recent `activate_model` request. A download that
+/// finishes after the user chose another model must not load over it.
+static LATEST_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+/// Name of the AI formatter in the in-flight set.
+const FORMATTER: &str = "ai-formatter";
 
 thread_local! {
     /// Models being downloaded right now, so a second request for the same
@@ -37,16 +56,21 @@ thread_local! {
     static IN_FLIGHT: RefCell<HashSet<&'static str>> = RefCell::new(HashSet::new());
 }
 
-/// Make `model` the active whisper model: save the choice, download the model
-/// if it is not on disk yet, and load it. `on_event` runs on the GTK thread.
+/// Whether a whisper model is being downloaded or loaded right now.
+pub fn model_download_in_progress() -> bool {
+    IN_FLIGHT.with(|f| f.borrow().iter().any(|name| *name != FORMATTER))
+}
+
+/// Make `model` the active whisper model: download it if it is not on disk
+/// yet, load it, and save the choice once it is loaded (so a failed download
+/// never leaves the settings pointing at a missing model). `on_event` runs on
+/// the GTK thread.
 pub fn activate_model(
     ctx: &AppContext,
     model: &'static WhisperModel,
     on_event: impl Fn(ModelEvent) + 'static,
 ) {
-    if let Err(e) = AppConfig::update(|c| c.model = model.name.to_string()) {
-        error!("Failed to save model preference: {e}");
-    }
+    let request = LATEST_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
 
     if !IN_FLIGHT.with(|f| f.borrow_mut().insert(model.name)) {
         on_event(ModelEvent::Failed(format!(
@@ -69,6 +93,14 @@ pub fn activate_model(
                 return;
             }
         }
+        if LATEST_REQUEST.load(Ordering::SeqCst) != request {
+            info!(
+                "Model '{}' downloaded, but another model was chosen meanwhile",
+                model.name
+            );
+            let _ = tx.send(ModelEvent::Superseded);
+            return;
+        }
         let _ = tx.send(ModelEvent::Loading);
         let event = match worker.load_model(mgr.model_path(model)).await {
             Ok(()) => ModelEvent::Ready,
@@ -79,7 +111,12 @@ pub fn activate_model(
 
     let ctx = ctx.clone();
     forward_events(rx, move |event| {
-        if matches!(event, ModelEvent::Ready | ModelEvent::Failed(_)) {
+        if event == ModelEvent::Ready {
+            if let Err(e) = AppConfig::update(|c| c.model = model.name.to_string()) {
+                error!("Failed to save model preference: {e}");
+            }
+        }
+        if event.is_final() {
             IN_FLIGHT.with(|f| f.borrow_mut().remove(model.name));
             ctx.send(AppAction::ModelChanged);
         }
@@ -89,8 +126,7 @@ pub fn activate_model(
 
 /// Make the AI formatter ready: download its model if needed and load it.
 pub fn activate_formatter(ctx: &AppContext, on_event: impl Fn(ModelEvent) + 'static) {
-    const NAME: &str = "ai-formatter";
-    if !IN_FLIGHT.with(|f| f.borrow_mut().insert(NAME)) {
+    if !IN_FLIGHT.with(|f| f.borrow_mut().insert(FORMATTER)) {
         on_event(ModelEvent::Failed(
             "The AI model is already being downloaded".into(),
         ));
@@ -121,8 +157,8 @@ pub fn activate_formatter(ctx: &AppContext, on_event: impl Fn(ModelEvent) + 'sta
     });
 
     forward_events(rx, move |event| {
-        if matches!(event, ModelEvent::Ready | ModelEvent::Failed(_)) {
-            IN_FLIGHT.with(|f| f.borrow_mut().remove(NAME));
+        if event.is_final() {
+            IN_FLIGHT.with(|f| f.borrow_mut().remove(FORMATTER));
         }
         on_event(event);
     });
@@ -137,6 +173,7 @@ pub fn describe(event: &ModelEvent, what: &str) -> String {
         ModelEvent::Loading => format!("Loading {what}\u{2026}"),
         ModelEvent::Ready => format!("{what} is ready"),
         ModelEvent::Failed(e) => e.clone(),
+        ModelEvent::Superseded => format!("{what} is downloaded"),
     }
 }
 
@@ -161,7 +198,7 @@ fn forward_events(rx: std_mpsc::Receiver<ModelEvent>, on_event: impl Fn(ModelEve
     glib::timeout_add_local(Duration::from_millis(100), move || loop {
         match rx.try_recv() {
             Ok(event) => {
-                let finished = matches!(event, ModelEvent::Ready | ModelEvent::Failed(_));
+                let finished = event.is_final();
                 on_event(event);
                 if finished {
                     return glib::ControlFlow::Break;

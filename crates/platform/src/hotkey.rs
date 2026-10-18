@@ -522,8 +522,8 @@ fn hotkey_listener_loop(
 // ---------------------------------------------------------------------------
 
 /// Open the `/dev/input/event*` devices not yet in `seen` that support
-/// keyboard keys. Every examined path is added to `seen`, so later calls only
-/// look at devices connected since.
+/// keyboard keys. Every device that could be opened is added to `seen`, so
+/// later calls only look at devices connected (or made accessible) since.
 fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, HotkeyError> {
     let entries = fs::read_dir("/dev/input")
         .map_err(|e| HotkeyError::PermissionDenied(format!("cannot read /dev/input: {e}")))?;
@@ -534,12 +534,15 @@ fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, Hotkey
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        if !name.starts_with("event") || !seen.insert(path.clone()) {
+        if !name.starts_with("event") || seen.contains(&path) {
             continue;
         }
 
         match Device::open(&path) {
             Ok(dev) => {
+                // Only remember devices that could be opened: one that failed
+                // (e.g. before udev set its permissions) is tried again later.
+                seen.insert(path.clone());
                 // Check if the device supports KEY events and has keyboard keys.
                 if let Some(supported) = dev.supported_keys() {
                     if supported.contains(KeyCode::KEY_SPACE) {

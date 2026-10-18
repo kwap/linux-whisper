@@ -125,10 +125,10 @@ impl LlmModelManager {
                     return Err(LlmModelManagerError::DownloadError(e.to_string()));
                 }
             };
-            out_file
-                .write_all(&chunk)
-                .await
-                .map_err(LlmModelManagerError::IoError)?;
+            if let Err(e) = out_file.write_all(&chunk).await {
+                let _ = std::fs::remove_file(&partial);
+                return Err(LlmModelManagerError::IoError(e));
+            }
             hasher.update(&chunk);
             downloaded += chunk.len() as u64;
 

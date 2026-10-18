@@ -12,7 +12,8 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use tracing::{error, info, warn};
 
-use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
+use linux_whisper_audio::capture::{AudioBuffer, AudioCapture, CpalCapture};
+use linux_whisper_audio::resample::resample;
 use linux_whisper_core::config::{AppConfig, Theme};
 use linux_whisper_core::format::tidy_text;
 use linux_whisper_core::model::Transcript;
@@ -249,6 +250,9 @@ impl Controller {
                 self.set_tray_status(self.ready_text());
             }
             AppAction::SettingsChanged => {
+                if let Some(ref mut capture) = *self.capture.borrow_mut() {
+                    capture.set_input_device(AppConfig::load().input_device);
+                }
                 if let Some(ref win) = *self.window.borrow() {
                     win.refresh_rows();
                 }
@@ -260,7 +264,7 @@ impl Controller {
     fn show_window(self: &Rc<Self>) {
         let mut win = self.window.borrow_mut();
         let win = win.get_or_insert_with(|| {
-            let win = MainWindow::new(&self.ctx, self.tray_visible);
+            let win = MainWindow::new(&self.ctx);
             if let Some((transcript, label)) = self.last_dictation.borrow().clone() {
                 win.show_transcript(transcript, &label);
             }
@@ -274,15 +278,36 @@ impl Controller {
     /// Load the configured whisper model (or offer to download one) and, if
     /// enabled, the AI formatter.
     fn load_models(self: &Rc<Self>, config: &AppConfig) {
-        let target = model_registry::find_model(&config.model).unwrap_or_else(|| {
+        let mgr = ModelManager::new(AppConfig::models_dir());
+        let configured = model_registry::find_model(&config.model).unwrap_or_else(|| {
             warn!(
                 "Configured model '{}' not in registry; falling back to default",
                 config.model
             );
             model_registry::default_model()
         });
+        // If the configured model is gone (deleted, or never finished
+        // downloading), use one that is on disk rather than none.
+        let downloaded = mgr.list_downloaded();
+        let target = if mgr.is_downloaded(configured) {
+            Some(configured)
+        } else {
+            let default = model_registry::default_model();
+            let fallback = downloaded
+                .iter()
+                .find(|m| m.name == default.name)
+                .or(downloaded.first())
+                .copied();
+            if let Some(m) = fallback {
+                warn!(
+                    "Model '{}' is not downloaded; using '{}' instead",
+                    configured.name, m.name
+                );
+            }
+            fallback
+        };
 
-        if ModelManager::new(AppConfig::models_dir()).is_downloaded(target) {
+        if let Some(target) = target {
             info!("Loading model '{}'", target.name);
             self.set_tray_status(format!("Loading the {} model\u{2026}", target.name));
             let this = Rc::clone(self);
@@ -372,9 +397,17 @@ impl Controller {
         let model_on_disk = model_registry::find_model(&config.model)
             .is_some_and(|m| ModelManager::new(AppConfig::models_dir()).is_downloaded(m));
         if self.ctx.worker.loaded_model().is_none() && !model_on_disk {
-            self.show_window();
-            if let Some(ref win) = *self.window.borrow() {
-                win.prompt_model_download();
+            if models::model_download_in_progress() {
+                self.notify(
+                    "record",
+                    "The speech model is still downloading",
+                    "Dictation starts working as soon as the download finishes.",
+                );
+            } else {
+                self.show_window();
+                if let Some(ref win) = *self.window.borrow() {
+                    win.prompt_model_download();
+                }
             }
             return;
         }
@@ -403,17 +436,17 @@ impl Controller {
     }
 
     fn stop_and_transcribe(self: &Rc<Self>) {
-        let audio = {
+        let raw = {
             let mut capture = self.capture.borrow_mut();
             let Some(capture) = capture.as_mut() else {
                 return;
             };
-            capture.stop_recording()
+            capture.stop_recording_raw()
         };
         self.recording.set(false);
 
-        let audio = match audio {
-            Ok(audio) => audio,
+        let (samples, rate) = match raw {
+            Ok(raw) => raw,
             Err(e) => {
                 error!("Failed to stop recording: {e}");
                 self.set_recording_ui(false, self.ready_text());
@@ -421,7 +454,7 @@ impl Controller {
             }
         };
 
-        let secs = audio.samples.len() as f64 / audio.sample_rate as f64;
+        let secs = samples.len() as f64 / rate.max(1) as f64;
         info!("Recording stopped — {secs:.1}s of audio");
         if secs < MIN_RECORDING_SECS {
             self.set_recording_ui(false, self.ready_text());
@@ -430,28 +463,26 @@ impl Controller {
         self.set_recording_ui(false, "Transcribing\u{2026}".into());
 
         let config = AppConfig::load();
-
-        // When recording was stopped from this app's own window, typing the
-        // text would go into that window (and a space would press its focused
-        // button). The text is shown there and copied to the clipboard instead.
-        let own_window_focused = self
-            .window
-            .borrow()
-            .as_ref()
-            .is_some_and(|w| w.window.is_active());
-        let insert = config.auto_paste && !own_window_focused;
-
         let options = linux_whisper_whisper::engine::TranscribeOptions {
             language: (config.language != "auto").then(|| config.language.clone()),
             translate: false,
         };
 
-        // Transcribe, format and deliver off the GTK thread; send the result back.
-        let (result_tx, result_rx) =
-            std_mpsc::channel::<Result<(Transcript, String, Delivery), String>>();
+        // Resample, transcribe and format off the GTK thread.
+        let (result_tx, result_rx) = std_mpsc::channel::<Result<(Transcript, String), String>>();
         let worker = self.ctx.worker.clone();
         let llm_worker = self.ctx.llm_worker.clone();
         self.ctx.rt.spawn(async move {
+            let audio = tokio::task::spawn_blocking(move || AudioBuffer {
+                samples: resample(&samples, rate, AudioBuffer::TARGET_SAMPLE_RATE),
+                sample_rate: AudioBuffer::TARGET_SAMPLE_RATE,
+            })
+            .await;
+            let Ok(audio) = audio else {
+                let _ = result_tx.send(Err("resampling failed".into()));
+                return;
+            };
+
             let transcript = match worker.transcribe(audio, options).await {
                 Ok(t) => t,
                 Err(e) => {
@@ -479,56 +510,47 @@ impl Controller {
             } else {
                 basic
             };
-
-            let delivery = if text.is_empty() {
-                Delivery::Failed("no speech".into())
-            } else {
-                let deliver_config = AppConfig {
-                    auto_paste: insert,
-                    ..config.clone()
-                };
-                let deliver_text = text.clone();
-                tokio::task::spawn_blocking(move || {
-                    DictationService::deliver(&deliver_config, &deliver_text)
-                })
-                .await
-                .unwrap_or_else(|e| Delivery::Failed(e.to_string()))
-            };
-            let _ = result_tx.send(Ok((transcript, text, delivery)));
+            let _ = result_tx.send(Ok((transcript, text)));
         });
 
         let this = Rc::clone(self);
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            match result_rx.try_recv() {
-                Ok(result) => {
-                    this.finish_dictation(result, insert);
-                    glib::ControlFlow::Break
-                }
-                Err(std_mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(std_mpsc::TryRecvError::Disconnected) => {
-                    this.finish_dictation(Err("transcription stopped unexpectedly".into()), insert);
-                    glib::ControlFlow::Break
-                }
-            }
+        when_ready(result_rx, move |result| {
+            this.finish_dictation(
+                result.unwrap_or_else(|| Err("transcription stopped unexpectedly".into())),
+            );
         });
     }
 
-    /// Show the result of a dictation. `insert` says whether the text was
-    /// meant to be inserted into the focused window.
-    fn finish_dictation(
-        &self,
-        result: Result<(Transcript, String, Delivery), String>,
-        insert: bool,
-    ) {
-        self.set_tray_status(self.ready_text());
-        let (transcript, text, delivery) = match result {
+    /// Show a finished transcription and deliver its text.
+    fn finish_dictation(self: &Rc<Self>, result: Result<(Transcript, String), String>) {
+        // A second recording may already be running; leave its status alone.
+        let status = |text: String| {
+            if !self.recording.get() {
+                self.set_recording_ui(false, text);
+            }
+        };
+
+        let (transcript, text) = match result {
             Ok(r) => r,
             Err(e) => {
                 error!("Transcription failed: {e}");
+                status("Transcription failed".into());
                 self.notify("dictation", "Transcription failed", &e);
                 return;
             }
         };
+        status(self.ready_text());
+
+        if text.is_empty() {
+            // Keep whatever transcript the window shows.
+            info!("No speech recognised");
+            self.notify(
+                "dictation",
+                "No speech recognised",
+                "Nothing was heard in the recording.",
+            );
+            return;
+        }
 
         let label = format!(
             "Dictation \u{2014} {} segment(s), {:.1}s",
@@ -540,12 +562,33 @@ impl Controller {
         }
         *self.last_dictation.borrow_mut() = Some((transcript, label));
 
-        match delivery {
-            Delivery::Typed(_) | Delivery::Pasted => {}
-            Delivery::ClipboardOnly(reason) => {
+        // Decided now, not when recording stopped: typing into this app's own
+        // window would put the text there (and a space would press its focused
+        // button). The text is shown there and copied to the clipboard instead.
+        let config = AppConfig::load();
+        let own_window_focused = self
+            .window
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.window.is_active());
+        let insert = config.auto_paste && !own_window_focused;
+
+        let (delivery_tx, delivery_rx) = std_mpsc::channel::<Delivery>();
+        self.ctx.rt.spawn_blocking(move || {
+            let config = AppConfig {
+                auto_paste: insert,
+                ..config
+            };
+            let _ = delivery_tx.send(DictationService::deliver(&config, &text));
+        });
+
+        let this = Rc::clone(self);
+        when_ready(delivery_rx, move |delivery| match delivery {
+            Some(Delivery::Typed(_) | Delivery::Pasted) => {}
+            Some(Delivery::ClipboardOnly(reason)) => {
                 info!("Text left on the clipboard: {reason}");
                 if insert {
-                    self.notify(
+                    this.notify(
                         "dictation",
                         "Dictated text is on the clipboard",
                         &format!(
@@ -554,19 +597,12 @@ impl Controller {
                     );
                 }
             }
-            Delivery::Failed(reason) if text.is_empty() => {
-                info!("Nothing to deliver: {reason}");
-                self.notify(
-                    "dictation",
-                    "No speech recognised",
-                    "Nothing was heard in the recording.",
-                );
-            }
-            Delivery::Failed(reason) => {
+            Some(Delivery::Failed(reason)) => {
                 error!("Could not deliver the text: {reason}");
-                self.notify("dictation", "Could not deliver the text", &reason);
+                this.notify("dictation", "Could not deliver the text", &reason);
             }
-        }
+            None => error!("Text delivery stopped unexpectedly"),
+        });
     }
 
     // -- Feedback ------------------------------------------------------------
@@ -617,6 +653,23 @@ impl Controller {
     }
 }
 
+/// Run `on_result` on the GTK thread once a background task sends its result
+/// (`None` if the task ended without sending one).
+fn when_ready<T: 'static>(rx: std_mpsc::Receiver<T>, on_result: impl FnOnce(Option<T>) + 'static) {
+    let mut on_result = Some(on_result);
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        let result = match rx.try_recv() {
+            Ok(value) => Some(value),
+            Err(std_mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+            Err(std_mpsc::TryRecvError::Disconnected) => None,
+        };
+        if let Some(f) = on_result.take() {
+            f(result);
+        }
+        glib::ControlFlow::Break
+    });
+}
+
 /// Apply the theme preference to all windows.
 pub fn apply_theme(theme: Theme) {
     let scheme = match theme {
@@ -629,7 +682,7 @@ pub fn apply_theme(theme: Theme) {
 
 /// Whether a StatusNotifier host (the desktop's tray) is running, so the tray
 /// icon is actually visible. Stock GNOME has none.
-fn tray_host_running() -> bool {
+pub fn tray_host_running() -> bool {
     let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
         return false;
     };

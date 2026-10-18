@@ -55,12 +55,13 @@ pub struct MainWindow {
     syncing_dropdown: Rc<Cell<bool>>,
     /// Whether the first-run model prompt is open.
     prompt_open: Rc<Cell<bool>>,
+    /// Whether a file is being transcribed.
+    file_busy: Rc<Cell<bool>>,
 }
 
 impl MainWindow {
     /// Build and return a fully wired-up main window attached to `app`.
-    /// `tray_visible` says whether the window can be reopened from a tray icon.
-    pub fn new(ctx: &AppContext, tray_visible: bool) -> Self {
+    pub fn new(ctx: &AppContext) -> Self {
         let app = &ctx.app;
 
         // ── App menu actions ───────────────────────────────────────────
@@ -163,9 +164,15 @@ impl MainWindow {
             .label("Open File")
             .build();
 
+        // Export menu: one item per format, handled by the window's
+        // "export" action (see `connect_export_action`).
+        let export_menu = gio::Menu::new();
+        for (label, id, _) in EXPORT_FORMATS {
+            export_menu.append(Some(label), Some(&format!("win.export::{id}")));
+        }
         let export_button = gtk::MenuButton::builder()
-            .icon_name("document-save-symbolic")
             .label(fl!(LANGUAGE_LOADER, "export"))
+            .menu_model(&export_menu)
             .build();
 
         let copy_button = gtk::Button::builder()
@@ -249,10 +256,11 @@ impl MainWindow {
             transcript: Rc::new(RefCell::new(None)),
             syncing_dropdown: Rc::new(Cell::new(false)),
             prompt_open: Rc::new(Cell::new(false)),
+            file_busy: Rc::new(Cell::new(false)),
         };
 
         main_window.sync_model_dropdown();
-        main_window.connect_signals(tray_visible);
+        main_window.connect_signals();
         main_window
     }
 
@@ -326,7 +334,7 @@ impl MainWindow {
 
     /// First run: ask to download the default model.
     pub fn prompt_model_download(&self) {
-        if self.prompt_open.replace(true) {
+        if models::model_download_in_progress() || self.prompt_open.replace(true) {
             return;
         }
         let model = model_registry::default_model();
@@ -370,19 +378,18 @@ impl MainWindow {
             let what = format!("the {name} model");
             this.status_label
                 .set_label(&models::describe(&event, &what));
+            if event.is_final() {
+                this.model_dropdown.set_sensitive(true);
+            }
             match event {
                 ModelEvent::Ready => {
-                    this.model_dropdown.set_sensitive(true);
                     this.status_label.set_label(&format!(
                         "{name} model ready \u{2014} press {} to dictate",
                         AppConfig::load().hotkey
                     ));
                     this.show_toast(&format!("{name} model ready"));
                 }
-                ModelEvent::Failed(ref e) => {
-                    this.model_dropdown.set_sensitive(true);
-                    this.show_toast(e);
-                }
+                ModelEvent::Failed(ref e) => this.show_toast(e),
                 _ => {}
             }
         });
@@ -390,7 +397,7 @@ impl MainWindow {
 
     // ── Internal signal wiring ──────────────────────────────────────────
 
-    fn connect_signals(&self, tray_visible: bool) {
+    fn connect_signals(&self) {
         // Record button — same as the hotkey and the tray icon.
         {
             let ctx = self.ctx.clone();
@@ -502,9 +509,8 @@ impl MainWindow {
             });
         }
 
-        // Export button — popover with the formats.
-        self.export_button
-            .set_popover(Some(&build_export_popover(self.clone())));
+        // Export menu items.
+        connect_export_action(self);
 
         // Search entry — case-insensitive filter on transcript rows.
         {
@@ -550,7 +556,7 @@ impl MainWindow {
                     return glib::Propagation::Stop;
                 }
                 window.set_visible(false);
-                if !tray_visible && !hint_shown.replace(true) {
+                if !crate::tray_host_running() && !hint_shown.replace(true) {
                     let notification = gio::Notification::new("Linux Whisper is still running");
                     notification.set_body(Some(&format!(
                         "{}. Open Linux Whisper again from your applications to see this window.",
@@ -584,12 +590,21 @@ impl MainWindow {
             return;
         }
 
+        if self.file_busy.get() {
+            self.show_toast("Another file is being transcribed \u{2014} wait for it to finish");
+            return;
+        }
+
         if self.ctx.worker.loaded_model().is_none() {
             let config = AppConfig::load();
             let on_disk = model_registry::find_model(&config.model)
                 .is_some_and(|m| ModelManager::new(AppConfig::models_dir()).is_downloaded(m));
             if !on_disk {
-                self.prompt_model_download();
+                if models::model_download_in_progress() {
+                    self.show_toast("The speech model is still downloading");
+                } else {
+                    self.prompt_model_download();
+                }
                 return;
             }
         }
@@ -597,6 +612,7 @@ impl MainWindow {
         self.status_label
             .set_label(&format!("Transcribing {file_name}\u{2026}"));
         self.open_button.set_sensitive(false);
+        self.file_busy.set(true);
 
         let svc = TranscriptionService::new(Arc::new(self.ctx.worker.clone()));
         let config = AppConfig::load();
@@ -619,6 +635,7 @@ impl MainWindow {
                 }
             };
             this.open_button.set_sensitive(true);
+            this.file_busy.set(false);
             match result {
                 Ok(mut transcript) => {
                     transcript.title = file_name.clone();
@@ -675,53 +692,31 @@ fn ready_hint() -> String {
     format!("Press {} to dictate", AppConfig::load().hotkey)
 }
 
-// ── Export popover builder ───────────────────────────────────────────────
+// ── Export ───────────────────────────────────────────────────────────────
 
-/// Build the export format selection popover. When a format row is activated,
-/// it opens a file-save dialog and writes the exported transcript to disk.
-fn build_export_popover(win: MainWindow) -> gtk::Popover {
-    let formats = [
-        ("Plain Text (.txt)", ExportFormat::Txt, "txt"),
-        ("SubRip (.srt)", ExportFormat::Srt, "srt"),
-        ("WebVTT (.vtt)", ExportFormat::Vtt, "vtt"),
-        ("CSV (.csv)", ExportFormat::Csv, "csv"),
-    ];
+/// Export formats: menu label, action target, format.
+const EXPORT_FORMATS: [(&str, &str, ExportFormat); 4] = [
+    ("Plain Text (.txt)", "txt", ExportFormat::Txt),
+    ("SubRip (.srt)", "srt", ExportFormat::Srt),
+    ("WebVTT (.vtt)", "vtt", ExportFormat::Vtt),
+    ("CSV (.csv)", "csv", ExportFormat::Csv),
+];
 
-    let list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(vec!["boxed-list"])
-        .build();
-
-    let popover = gtk::Popover::builder().child(&list_box).build();
-
-    for (label, _, _) in &formats {
-        let row = gtk::ListBoxRow::builder().build();
-        let row_label = gtk::Label::builder()
-            .label(*label)
-            .halign(gtk::Align::Start)
-            .margin_top(8)
-            .margin_bottom(8)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        row.set_child(Some(&row_label));
-        list_box.append(&row);
-    }
-
-    let popover_weak = popover.downgrade();
-    list_box.connect_row_activated(move |_list_box, row| {
-        let Some(&(_, format, ext)) = usize::try_from(row.index())
-            .ok()
-            .and_then(|i| formats.get(i))
-        else {
+/// Add the window's `export` action: export the transcript on screen in the
+/// format named by the action's target, via a save dialog.
+fn connect_export_action(win: &MainWindow) {
+    let action = gio::SimpleAction::new("export", Some(glib::VariantTy::STRING));
+    let this = win.clone();
+    action.connect_activate(move |_, target| {
+        let Some(ext) = target.and_then(|t| t.get::<String>()) else {
             return;
         };
-        if let Some(popover) = popover_weak.upgrade() {
-            popover.popdown();
-        }
+        let Some(&(_, ext, format)) = EXPORT_FORMATS.iter().find(|(_, id, _)| *id == ext) else {
+            return;
+        };
 
-        let Some(transcript) = win.transcript.borrow().clone() else {
-            win.show_toast("No transcript to export");
+        let Some(transcript) = this.transcript.borrow().clone() else {
+            this.show_toast("No transcript to export");
             return;
         };
 
@@ -729,7 +724,7 @@ fn build_export_popover(win: MainWindow) -> gtk::Popover {
             Ok(c) => c,
             Err(e) => {
                 error!("Export failed: {e}");
-                win.show_toast(&format!("Export failed: {e}"));
+                this.show_toast(&format!("Export failed: {e}"));
                 return;
             }
         };
@@ -752,9 +747,9 @@ fn build_export_popover(win: MainWindow) -> gtk::Popover {
             .modal(true)
             .build();
 
-        let win = win.clone();
+        let this = this.clone();
         dialog.save(
-            Some(&win.window.clone()),
+            Some(&this.window.clone()),
             gio::Cancellable::NONE,
             move |result| {
                 // An error means the user cancelled.
@@ -768,18 +763,17 @@ fn build_export_popover(win: MainWindow) -> gtk::Popover {
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
-                        win.show_toast(&format!("Exported: {name}"));
+                        this.show_toast(&format!("Exported: {name}"));
                     }
                     Err(e) => {
                         error!("Save failed: {e}");
-                        win.show_toast(&format!("Save failed: {e}"));
+                        this.show_toast(&format!("Save failed: {e}"));
                     }
                 }
             },
         );
     });
-
-    popover
+    win.window.add_action(&action);
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────

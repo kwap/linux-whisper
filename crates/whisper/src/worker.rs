@@ -254,6 +254,11 @@ const MIN_PART_MS: usize = 1500;
 const LONG_AUDIO_SECS: usize = 120;
 const LONG_AUDIO_PART_SECS: usize = 30;
 
+/// One detection over a recording that fits in whisper's 30 s window: above
+/// this probability the recording is taken to be in one language.
+const WHOLE_CLIP_SURE_PROBABILITY: f32 = 0.9;
+const WINDOW_SECS: usize = 30;
+
 /// A part's detected language is always trusted above this probability.
 const SURE_LANGUAGE_PROBABILITY: f32 = 0.6;
 
@@ -301,7 +306,9 @@ fn run_transcription(
     let spans = match &options.language {
         Some(lang) => vec![(0..samples.len(), Some(lang.clone()))],
         None if ctx.is_multilingual() => language_spans(&mut state, samples, rate, threads),
-        None => vec![(0..samples.len(), None)],
+        // English-only models: auto-detecting would only cost time and report
+        // a meaningless language.
+        None => vec![(0..samples.len(), Some("en".to_string()))],
     };
 
     let mut transcript = Transcript::new(
@@ -409,6 +416,25 @@ fn language_spans(
     threads: usize,
 ) -> Vec<(Range<usize>, Option<String>)> {
     let whole = vec![(0..samples.len(), None)];
+
+    // Most recordings are in one language. One detection tells, and then the
+    // whole recording is transcribed in that language in a single pass — the
+    // same cost as letting whisper.cpp detect it. Only an unsure result
+    // (typical when two languages are mixed) is worth splitting at pauses.
+    if samples.len() <= WINDOW_SECS * rate {
+        if let Some((id, probabilities)) = detect_language(state, samples, threads) {
+            let top = usize::try_from(id)
+                .ok()
+                .and_then(|i| probabilities.get(i).copied())
+                .unwrap_or(0.0);
+            if top >= WHOLE_CLIP_SURE_PROBABILITY {
+                return vec![(
+                    0..samples.len(),
+                    whisper_rs::get_lang_str(id).map(str::to_string),
+                )];
+            }
+        }
+    }
 
     let max_merge = if samples.len() > LONG_AUDIO_SECS * rate {
         LONG_AUDIO_PART_SECS * rate

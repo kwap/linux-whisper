@@ -90,6 +90,9 @@ pub struct CpalCapture {
     device_channels: u16,
     /// ALSA name of the device chosen in Preferences (`None` = system default).
     input_device: Option<String>,
+    /// The chosen device, looked up once per choice: enumerating ALSA devices
+    /// opens each one and is too slow to do at the start of every recording.
+    chosen_device: Option<cpal::Device>,
     /// Name of the device the current or last recording used.
     active_device_name: Option<String>,
 }
@@ -107,6 +110,7 @@ impl CpalCapture {
             device_sample_rate: 0,
             device_channels: 0,
             input_device: None,
+            chosen_device: None,
             active_device_name: None,
         })
     }
@@ -114,7 +118,10 @@ impl CpalCapture {
     /// Choose the device used by the next recording. `None` records from the
     /// system default device, which follows the desktop's sound settings.
     pub fn set_input_device(&mut self, id: Option<String>) {
-        self.input_device = id;
+        if id != self.input_device {
+            self.chosen_device = id.as_deref().and_then(|wanted| self.find_device(wanted));
+            self.input_device = id;
+        }
     }
 
     /// Readable name of the device the current or last recording used.
@@ -148,22 +155,64 @@ impl CpalCapture {
             .collect()
     }
 
+    fn find_device(&self, wanted: &str) -> Option<cpal::Device> {
+        let found = self
+            .host
+            .input_devices()
+            .ok()
+            .and_then(|mut devices| devices.find(|d| d.name().ok().as_deref() == Some(wanted)));
+        if found.is_none() {
+            warn!("Input device \"{wanted}\" not found; using the system default");
+        }
+        found
+    }
+
     /// The device chosen in Preferences, or the system default if none was
-    /// chosen or it is no longer present.
-    fn resolve_device(&self) -> Result<cpal::Device, CaptureError> {
-        if let Some(wanted) = self.input_device.as_deref() {
-            let found =
-                self.host.input_devices().ok().and_then(|mut devices| {
-                    devices.find(|d| d.name().ok().as_deref() == Some(wanted))
-                });
-            match found {
-                Some(device) => return Ok(device),
-                None => warn!("Input device \"{wanted}\" not found; using the system default"),
+    /// chosen or it is not present.
+    fn resolve_device(&mut self) -> Result<cpal::Device, CaptureError> {
+        if self.chosen_device.is_none() {
+            // A chosen device that was missing may have been plugged in since.
+            if let Some(wanted) = self.input_device.clone() {
+                self.chosen_device = self.find_device(&wanted);
             }
         }
-        self.host
-            .default_input_device()
-            .ok_or(CaptureError::NoInputDevice)
+        match self.chosen_device {
+            Some(ref device) => Ok(device.clone()),
+            None => self
+                .host
+                .default_input_device()
+                .ok_or(CaptureError::NoInputDevice),
+        }
+    }
+
+    /// Stop recording and return the captured mono samples and their sample
+    /// rate, without resampling to 16 kHz. Resampling a long recording takes a
+    /// noticeable moment, so callers can do it off the UI thread.
+    pub fn stop_recording_raw(&mut self) -> Result<(Vec<f32>, u32), CaptureError> {
+        if !self.recording {
+            return Err(CaptureError::StreamError(
+                "not currently recording".to_string(),
+            ));
+        }
+
+        // Drop the stream to stop recording.
+        if let Some(stream) = self.stream.take() {
+            let _ = stream.pause();
+            drop(stream);
+        }
+        self.recording = false;
+
+        let raw_samples = {
+            let mut buf = self.buffer.lock().expect("buffer lock poisoned");
+            std::mem::take(&mut *buf)
+        };
+
+        info!(
+            "Captured {} mono samples at {} Hz",
+            raw_samples.len(),
+            self.device_sample_rate,
+        );
+        Ok((raw_samples, self.device_sample_rate))
     }
 
     /// Returns the name of the default input device, if available.
@@ -349,36 +398,11 @@ impl AudioCapture for CpalCapture {
     }
 
     fn stop_recording(&mut self) -> Result<AudioBuffer, CaptureError> {
-        if !self.recording {
-            return Err(CaptureError::StreamError(
-                "not currently recording".to_string(),
-            ));
-        }
-
-        // Drop the stream to stop recording.
-        if let Some(stream) = self.stream.take() {
-            let _ = stream.pause();
-            drop(stream);
-        }
-        self.recording = false;
-
-        let raw_samples = {
-            let mut buf = self.buffer.lock().expect("buffer lock poisoned");
-            std::mem::take(&mut *buf)
-        };
-
-        info!(
-            "Captured {} mono samples at {} Hz",
-            raw_samples.len(),
-            self.device_sample_rate,
-        );
+        let (raw_samples, rate) = self.stop_recording_raw()?;
 
         // Resample to 16 kHz.
-        let samples = crate::resample::resample(
-            &raw_samples,
-            self.device_sample_rate,
-            AudioBuffer::TARGET_SAMPLE_RATE,
-        );
+        let samples =
+            crate::resample::resample(&raw_samples, rate, AudioBuffer::TARGET_SAMPLE_RATE);
 
         info!("Resampled to {} samples at 16 kHz", samples.len());
 

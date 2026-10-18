@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use crate::display::DisplayServer;
 
@@ -44,23 +45,43 @@ impl ArboardClipboard {
     }
 }
 
+/// One clipboard handle for the life of the process. On X11 the copied text
+/// is served by this process, and arboard stops serving it when the last
+/// handle is dropped — so without a clipboard manager a per-call handle would
+/// leave nothing to paste.
+static ARBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+
+fn with_arboard<T>(
+    f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, ClipboardError>,
+) -> Result<T, ClipboardError> {
+    let mut guard = ARBOARD
+        .lock()
+        .map_err(|_| ClipboardError::AccessError("clipboard lock poisoned".into()))?;
+    if guard.is_none() {
+        *guard =
+            Some(arboard::Clipboard::new().map_err(|e| {
+                ClipboardError::AccessError(format!("failed to open clipboard: {e}"))
+            })?);
+    }
+    match guard.as_mut() {
+        Some(cb) => f(cb),
+        None => Err(ClipboardError::AccessError("clipboard unavailable".into())),
+    }
+}
+
 impl ClipboardManager for ArboardClipboard {
     fn get_text(&self) -> Result<String, ClipboardError> {
-        // arboard requires &mut self for get_text, so we use an interior
-        // mutability workaround via unsafe pointer cast. However, the simpler
-        // approach is to just create a new clipboard handle each time. This is
-        // cheap on Linux.
-        let mut cb = arboard::Clipboard::new()
-            .map_err(|e| ClipboardError::AccessError(format!("failed to open clipboard: {e}")))?;
-        cb.get_text()
-            .map_err(|e| ClipboardError::AccessError(format!("failed to read clipboard: {e}")))
+        with_arboard(|cb| {
+            cb.get_text()
+                .map_err(|e| ClipboardError::AccessError(format!("failed to read clipboard: {e}")))
+        })
     }
 
     fn set_text(&self, text: &str) -> Result<(), ClipboardError> {
-        let mut cb = arboard::Clipboard::new()
-            .map_err(|e| ClipboardError::AccessError(format!("failed to open clipboard: {e}")))?;
-        cb.set_text(text.to_string())
-            .map_err(|e| ClipboardError::SetError(format!("failed to write clipboard: {e}")))
+        with_arboard(|cb| {
+            cb.set_text(text.to_string())
+                .map_err(|e| ClipboardError::SetError(format!("failed to write clipboard: {e}")))
+        })
     }
 }
 

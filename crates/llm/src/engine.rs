@@ -180,14 +180,26 @@ impl LlmEngine {
     }
 }
 
-/// The formatter must only change punctuation, capitals and layout. Reject
-/// output that is empty, much shorter or longer than the input, or that drops
-/// many of its words — the caller then falls back to the basic formatter.
+/// Number words a spoken list turns into list numbers ("first" → "1.").
+const NUMBER_WORDS: [&str; 26] = [
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "first",
+    "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+    "firstly", "secondly", "thirdly", "next", "then", "finally",
+];
+
+/// The formatter must only change punctuation, capitals and layout (and turn
+/// spoken lists into numbered ones). Reject output that is empty, much
+/// shorter or longer than the input, or that drops many of its words — the
+/// caller then falls back to the basic formatter. Numbers and number words
+/// are left out of the comparison, since list numbering replaces them.
 fn is_plausible_reformat(input: &str, output: &str) -> bool {
     let words = |s: &str| -> Vec<String> {
         s.split(|c: char| !c.is_alphanumeric())
             .filter(|w| !w.is_empty())
             .map(|w| w.to_lowercase())
+            .filter(|w| {
+                !w.chars().all(|c| c.is_ascii_digit()) && !NUMBER_WORDS.contains(&w.as_str())
+            })
             .collect()
     };
     let in_words = words(input);
@@ -238,6 +250,14 @@ mod tests {
         assert!(is_plausible_reformat(
             "so first buy milk second call mom",
             "So, first: buy milk.\n2. Call Mom."
+        ));
+    }
+
+    #[test]
+    fn reformat_check_accepts_numbered_lists() {
+        assert!(is_plausible_reformat(
+            "first buy milk second call mom third pay rent",
+            "1. Buy milk\n2. Call mom\n3. Pay rent"
         ));
     }
 

@@ -197,8 +197,7 @@ fn render_svg_to_icon(svg_data: &str, size: i32) -> Option<Icon> {
     // Convert from RGBA (tiny-skia premultiplied) to ARGB (ksni big-endian).
     let rgba = pixmap.data();
     let mut argb = Vec::with_capacity(rgba.len());
-    for chunk in rgba.chunks_exact(4) {
-        let (r, g, b, a) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+    for &[r, g, b, a] in rgba.as_chunks::<4>().0 {
         // Un-premultiply.
         let (r, g, b) = if a > 0 && a < 255 {
             let af = a as f32 / 255.0;

@@ -128,8 +128,9 @@ impl LlmWorker {
                             engine.format_text(&text)
                         }))
                         .unwrap_or_else(|_| {
-                            error!("LLM formatter panicked; resetting the engine");
-                            engine = LlmEngine::new();
+                            // The engine stays usable: the next call starts at
+                            // position 0, which resets the model's cache.
+                            error!("LLM formatter panicked");
                             Err(LlmError::InferenceError("formatter crashed".into()))
                         });
                         let _ = reply.send(result);

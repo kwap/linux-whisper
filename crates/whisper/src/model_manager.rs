@@ -150,9 +150,10 @@ impl ModelManager {
                     return Err(ModelManagerError::DownloadError(e.to_string()));
                 }
             };
-            file.write_all(&chunk)
-                .await
-                .map_err(ModelManagerError::IoError)?;
+            if let Err(e) = file.write_all(&chunk).await {
+                let _ = std::fs::remove_file(&partial);
+                return Err(ModelManagerError::IoError(e));
+            }
             hasher.update(&chunk);
             downloaded += chunk.len() as u64;
 
