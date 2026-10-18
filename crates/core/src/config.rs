@@ -32,6 +32,24 @@ pub enum Theme {
 }
 
 // ---------------------------------------------------------------------------
+// PasteShortcut
+// ---------------------------------------------------------------------------
+
+/// Key combination sent to the focused window to paste dictated text when it
+/// cannot be typed directly (GNOME and KDE on Wayland).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PasteShortcut {
+    /// Ctrl+V — most applications.
+    #[default]
+    CtrlV,
+    /// Ctrl+Shift+V — terminals.
+    CtrlShiftV,
+    /// Shift+Insert — works in most applications and terminals.
+    ShiftInsert,
+}
+
+// ---------------------------------------------------------------------------
 // AppConfig
 // ---------------------------------------------------------------------------
 
@@ -66,6 +84,13 @@ pub struct AppConfig {
 
     /// Text formatting options for transcribed output.
     pub format: FormatOptions,
+
+    /// Name of the audio input device to record from. `None` uses the
+    /// system default device.
+    pub input_device: Option<String>,
+
+    /// Shortcut used to paste dictated text when it cannot be typed directly.
+    pub paste_shortcut: PasteShortcut,
 }
 
 impl Default for AppConfig {
@@ -79,6 +104,8 @@ impl Default for AppConfig {
             minimize_to_tray: true,
             show_confidence: false,
             format: FormatOptions::default(),
+            input_device: None,
+            paste_shortcut: PasteShortcut::default(),
         }
     }
 }
@@ -134,6 +161,17 @@ impl AppConfig {
         })?;
         tracing::info!("Saved config to {}", path.display());
         Ok(())
+    }
+
+    /// Load the configuration from disk, apply `change`, and save it.
+    ///
+    /// Always starting from the file on disk means that separate settings
+    /// changed one after another never overwrite each other.
+    pub fn update(change: impl FnOnce(&mut AppConfig)) -> Result<AppConfig, ConfigError> {
+        let mut cfg = Self::load();
+        change(&mut cfg);
+        cfg.save()?;
+        Ok(cfg)
     }
 
     // -- XDG-compliant directory helpers -------------------------------------
@@ -253,6 +291,8 @@ mod tests {
                 enabled: false,
                 llm_enabled: true,
             },
+            input_device: Some("Blue Yeti".to_string()),
+            paste_shortcut: PasteShortcut::CtrlShiftV,
         };
 
         let toml_str = original.to_toml().expect("serialization should succeed");
@@ -281,6 +321,34 @@ mod tests {
         assert_eq!(cfg.model, defaults.model);
         assert_eq!(cfg.theme, defaults.theme);
         assert_eq!(cfg.minimize_to_tray, defaults.minimize_to_tray);
+    }
+
+    #[test]
+    fn paste_shortcut_serializes_as_kebab_case() {
+        let cfg = AppConfig {
+            paste_shortcut: PasteShortcut::ShiftInsert,
+            ..Default::default()
+        };
+        let toml_str = cfg.to_toml().unwrap();
+        assert!(toml_str.contains("paste_shortcut = \"shift-insert\""));
+        assert_eq!(AppConfig::from_toml(&toml_str).unwrap(), cfg);
+    }
+
+    #[test]
+    fn config_from_older_version_gets_new_fields_defaulted() {
+        // A 0.9.6 config file has no input_device or paste_shortcut.
+        let old = r#"
+            hotkey = "Super+Shift+Space"
+            auto_paste = true
+            language = "auto"
+            model = "base"
+            theme = "system"
+            minimize_to_tray = true
+            show_confidence = false
+        "#;
+        let cfg = AppConfig::from_toml(old).unwrap();
+        assert_eq!(cfg.input_device, None);
+        assert_eq!(cfg.paste_shortcut, PasteShortcut::CtrlV);
     }
 
     #[test]
@@ -387,6 +455,27 @@ mod tests {
         let dir = AppConfig::data_dir();
         assert_eq!(dir, PathBuf::from("/tmp/xdg_test_data/linux-whisper"));
 
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn update_keeps_changes_made_by_earlier_updates() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let key = "XDG_CONFIG_HOME";
+        let prev = std::env::var(key).ok();
+        let dir = std::env::temp_dir().join(format!("lw-config-update-{}", std::process::id()));
+        std::env::set_var(key, &dir);
+
+        AppConfig::update(|c| c.model = "small".into()).unwrap();
+        AppConfig::update(|c| c.language = "pl".into()).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.model, "small");
+        assert_eq!(cfg.language, "pl");
+
+        let _ = std::fs::remove_dir_all(&dir);
         match prev {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),

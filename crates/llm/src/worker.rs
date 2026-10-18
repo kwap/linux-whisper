@@ -3,10 +3,11 @@
 //! [`LlmWorker`] spawns a dedicated OS thread for running synchronous candle
 //! inference and exposes an async interface via tokio channels.
 
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::engine::{LlmEngine, LlmError};
 
@@ -121,7 +122,16 @@ impl LlmWorker {
                 match cmd {
                     LlmWorkerCommand::FormatText { text, reply } => {
                         debug!("LLM worker: format_text request ({} chars)", text.len());
-                        let result = engine.format_text(&text);
+                        // A panic inside candle must not take the worker (and
+                        // with it the formatter) down for the rest of the session.
+                        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            engine.format_text(&text)
+                        }))
+                        .unwrap_or_else(|_| {
+                            error!("LLM formatter panicked; resetting the engine");
+                            engine = LlmEngine::new();
+                            Err(LlmError::InferenceError("formatter crashed".into()))
+                        });
                         let _ = reply.send(result);
                     }
 

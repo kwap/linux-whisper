@@ -151,6 +151,10 @@ impl ksni::Tray for LinuxWhisperTray {
 }
 
 /// Spawn the system tray icon on the tokio runtime.
+///
+/// This succeeds even when no tray host is running (stock GNOME): the icon
+/// then appears as soon as one starts, e.g. after enabling the AppIndicator
+/// extension.
 pub async fn spawn_tray(
     action_tx: mpsc::UnboundedSender<TrayAction>,
 ) -> Result<ksni::Handle<LinuxWhisperTray>, ksni::Error> {
@@ -159,7 +163,7 @@ pub async fn spawn_tray(
         status_text: "Ready".into(),
         action_tx,
     };
-    tray.spawn().await
+    tray.assume_sni_available(true).spawn().await
 }
 
 // ---------------------------------------------------------------------------

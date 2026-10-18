@@ -104,6 +104,9 @@ impl ModelManager {
         std::fs::create_dir_all(&self.models_dir)?;
 
         let dest = self.model_path(model);
+        // Download next to the final file and rename it into place only after
+        // the hash matches, so an interrupted download never looks installed.
+        let partial = dest.with_extension("bin.part");
         info!("Downloading model '{}' to {}", model.name, dest.display());
 
         let client = reqwest::Client::builder()
@@ -131,7 +134,7 @@ impl ModelManager {
         // Stream the response body to disk while computing SHA-256.
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut file = tokio::fs::File::create(&dest)
+        let mut file = tokio::fs::File::create(&partial)
             .await
             .map_err(ModelManagerError::IoError)?;
 
@@ -140,7 +143,13 @@ impl ModelManager {
 
         use tokio::io::AsyncWriteExt;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| ModelManagerError::DownloadError(e.to_string()))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&partial);
+                    return Err(ModelManagerError::DownloadError(e.to_string()));
+                }
+            };
             file.write_all(&chunk)
                 .await
                 .map_err(ModelManagerError::IoError)?;
@@ -158,7 +167,7 @@ impl ModelManager {
         info!(
             "Download complete: {} bytes written to {}",
             downloaded,
-            dest.display()
+            partial.display()
         );
 
         // Verify integrity against the registry SHA-256 hash.
@@ -169,13 +178,14 @@ impl ModelManager {
                 "Integrity check failed for '{}': expected {}, got {}",
                 model.name, model.sha256, actual_hash
             );
-            let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::remove_file(&partial);
             return Err(ModelManagerError::IntegrityError {
                 expected: model.sha256.to_string(),
                 actual: actual_hash,
             });
         }
 
+        std::fs::rename(&partial, &dest)?;
         Ok(dest)
     }
 
@@ -226,6 +236,17 @@ mod tests {
         // Create a dummy file.
         std::fs::write(mgr.model_path(model), b"fake model data").unwrap();
         assert!(mgr.is_downloaded(model));
+    }
+
+    #[test]
+    fn interrupted_download_does_not_count_as_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ModelManager::new(dir.path().to_path_buf());
+        let model = model_registry::find_model("tiny").unwrap();
+
+        // What an interrupted download leaves behind.
+        std::fs::write(dir.path().join("ggml-tiny.bin.part"), b"half a model").unwrap();
+        assert!(!mgr.is_downloaded(model));
     }
 
     #[test]

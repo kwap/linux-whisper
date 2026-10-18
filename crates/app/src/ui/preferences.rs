@@ -1,43 +1,68 @@
-use std::sync::mpsc as std_mpsc;
-use std::time::Duration;
-
 use adw::prelude::*;
-use gtk::glib;
 use linux_whisper_audio::capture::CpalCapture;
-use linux_whisper_core::config::AppConfig;
+use linux_whisper_core::config::{AppConfig, PasteShortcut, Theme};
+use linux_whisper_core::language::Language;
 use linux_whisper_llm::model_manager::LlmModelManager;
+use linux_whisper_platform::hotkey::{check_input_group_membership, parse_hotkey};
+use linux_whisper_platform::text_inject::UinputPaster;
 use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
 use tracing::{error, info};
 
+use crate::context::{AppAction, AppContext};
+use crate::services::models::{self, ModelEvent};
+
+/// Save a setting. Every change re-reads the file first, so settings changed
+/// one after another never overwrite each other.
+fn save(change: impl FnOnce(&mut AppConfig)) {
+    if let Err(e) = AppConfig::update(change) {
+        error!("Failed to save settings: {e}");
+    }
+}
+
 /// Display the application preferences window.
-///
-/// `tokio_handle` is used to spawn async model downloads.
-pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
+pub fn show_preferences(ctx: &AppContext, parent: Option<&adw::ApplicationWindow>) {
     let config = AppConfig::load();
 
     let prefs_window = adw::PreferencesWindow::builder()
         .title("Preferences")
-        .modal(true)
         .default_width(600)
         .default_height(700)
         .build();
+    if let Some(parent) = parent.filter(|p| p.is_visible()) {
+        prefs_window.set_transient_for(Some(parent));
+        prefs_window.set_modal(true);
+    }
 
-    // -----------------------------------------------------------------------
-    // General page
-    // -----------------------------------------------------------------------
     let general_page = adw::PreferencesPage::builder()
         .title("General")
         .icon_name("preferences-other-symbolic")
         .build();
 
-    // -- Dictation group ----------------------------------------------------
-    let dictation_group = adw::PreferencesGroup::builder().title("Dictation").build();
+    general_page.add(&dictation_group(ctx, &config, &prefs_window));
+    general_page.add(&formatting_group(ctx, &config, &prefs_window));
+    general_page.add(&appearance_group(ctx, &config));
+    general_page.add(&storage_group(ctx));
+    general_page.add(&system_group());
 
-    // Model selector — compact names: "Tiny (74 MB)" instead of long strings.
+    prefs_window.add(&general_page);
+    prefs_window.present();
+}
+
+// ---------------------------------------------------------------------------
+// Dictation
+// ---------------------------------------------------------------------------
+
+fn dictation_group(
+    ctx: &AppContext,
+    config: &AppConfig,
+    prefs_window: &adw::PreferencesWindow,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Dictation").build();
+
+    // Model selector — compact names: "Base (141 MB)".
     let all_models = model_registry::all_models();
     let mgr = ModelManager::new(AppConfig::models_dir());
-
     let model_names: Vec<String> = all_models
         .iter()
         .map(|m| {
@@ -50,345 +75,310 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
             }
         })
         .collect();
-    let model_name_refs: Vec<&str> = model_names.iter().map(|s| s.as_str()).collect();
-    let model_list = gtk::StringList::new(&model_name_refs);
+    let model_name_refs: Vec<&str> = model_names.iter().map(String::as_str).collect();
 
-    let current_downloaded = model_registry::find_model(&config.model)
-        .map(|m| mgr.is_downloaded(m))
-        .unwrap_or(false);
-
+    let loaded = ctx.worker.loaded_model();
     let model_row = adw::ComboRow::builder()
         .title("Whisper Model")
-        .subtitle(if current_downloaded {
-            "Model loaded and ready"
-        } else {
-            "No model downloaded \u{2014} select one to download"
+        .subtitle(match loaded {
+            Some(ref name) if *name == config.model => "Loaded and ready".to_string(),
+            _ if model_registry::find_model(&config.model)
+                .is_some_and(|m| mgr.is_downloaded(m)) =>
+            {
+                "Downloaded".to_string()
+            }
+            _ => "Not downloaded yet \u{2014} choose a model to download it".to_string(),
         })
-        .model(&model_list)
+        .model(&gtk::StringList::new(&model_name_refs))
         .build();
-
-    // Pre-select configured model (without triggering download).
-    let model_idx = all_models
-        .iter()
-        .position(|m| m.name == config.model)
-        .unwrap_or(0);
-    model_row.set_selected(model_idx as u32);
-
-    // On model change: save config + auto-download if needed.
+    if let Some(idx) = all_models.iter().position(|m| m.name == config.model) {
+        model_row.set_selected(idx as u32);
+    }
     {
-        let config_for_model = config.clone();
-        let handle_for_model = tokio_handle.clone();
-        let initial_idx = std::sync::atomic::AtomicU32::new(model_idx as u32);
-        let first_change = std::sync::atomic::AtomicBool::new(true);
-
-        model_row.connect_notify(Some("selected"), move |row, _| {
-            let idx = row.selected();
-
-            // Skip the initial set_selected callback.
-            use std::sync::atomic::Ordering::Relaxed;
-            if first_change.load(Relaxed) && idx == initial_idx.load(Relaxed) {
-                first_change.store(false, Relaxed);
+        let ctx = ctx.clone();
+        let prefs_window = prefs_window.clone();
+        model_row.connect_selected_notify(move |row| {
+            let Some(model) = all_models.get(row.selected() as usize) else {
                 return;
-            }
-            first_change.store(false, Relaxed);
-
-            let idx = idx as usize;
-            if let Some(model) = all_models.get(idx) {
-                let mut cfg = config_for_model.clone();
-                cfg.model = model.name.to_string();
-                if let Err(e) = cfg.save() {
-                    error!("Failed to save model preference: {e}");
+            };
+            info!("Model preference changed to '{}'", model.name);
+            let name = pretty_model_name(model.name);
+            let row = row.clone();
+            let prefs_window = prefs_window.clone();
+            models::activate_model(&ctx, model, move |event| {
+                row.set_subtitle(&models::describe(&event, &name));
+                match event {
+                    ModelEvent::Ready => row.set_subtitle("Loaded and ready"),
+                    ModelEvent::Failed(ref e) => prefs_window.add_toast(adw::Toast::new(e)),
+                    _ => {}
                 }
-                info!("Model preference changed to '{}'", model.name);
-
-                // Already downloaded — just confirm.
-                let mgr = ModelManager::new(AppConfig::models_dir());
-                if mgr.is_downloaded(model) {
-                    row.set_subtitle("Model loaded and ready");
-                    return;
-                }
-
-                // Auto-download.
-                let model_name = model.name.to_string();
-                info!("Auto-downloading model '{}'", model_name);
-
-                let model_for_task = model.clone();
-                let (prog_tx, prog_rx) = std_mpsc::channel::<Option<f64>>();
-
-                handle_for_model.spawn(async move {
-                    let mgr = ModelManager::new(AppConfig::models_dir());
-                    let tx = prog_tx.clone();
-                    let progress_cb = Box::new(move |downloaded: u64, total: u64| {
-                        if total > 0 {
-                            let _ = tx.send(Some(downloaded as f64 / total as f64));
-                        }
-                    });
-                    let ok = mgr
-                        .download(&model_for_task, Some(progress_cb))
-                        .await
-                        .is_ok();
-                    if ok {
-                        info!("Model '{}' downloaded", model_for_task.name);
-                    } else {
-                        error!("Model '{}' download failed", model_for_task.name);
-                    }
-                    let _ = prog_tx.send(None); // signal done
-                });
-
-                let row_ref = row.clone();
-                let name_done = model_name.clone();
-                row.set_subtitle(&format!("Downloading {model_name}..."));
-
-                glib::timeout_add_local(Duration::from_millis(200), move || {
-                    loop {
-                        match prog_rx.try_recv() {
-                            Ok(Some(frac)) => {
-                                let pct = (frac * 100.0) as u32;
-                                row_ref.set_subtitle(&format!("Downloading {name_done}... {pct}%"));
-                            }
-                            Ok(None) => {
-                                row_ref.set_subtitle("Model loaded and ready");
-                                return glib::ControlFlow::Break;
-                            }
-                            Err(std_mpsc::TryRecvError::Empty) => break,
-                            Err(std_mpsc::TryRecvError::Disconnected) => {
-                                row_ref.set_subtitle("Download failed");
-                                return glib::ControlFlow::Break;
-                            }
-                        }
-                    }
-                    glib::ControlFlow::Continue
-                });
-            }
+            });
         });
     }
+    group.add(&model_row);
 
-    dictation_group.add(&model_row);
-
-    // Language selector.
-    let languages = [
-        ("auto", "Auto-detect"),
-        ("en", "English"),
-        ("pl", "Polish"),
-        ("es", "Spanish"),
-        ("fr", "French"),
-        ("de", "German"),
-        ("it", "Italian"),
-        ("pt", "Portuguese"),
-        ("nl", "Dutch"),
-        ("ja", "Japanese"),
-        ("ko", "Korean"),
-        ("zh", "Chinese"),
-        ("ru", "Russian"),
-        ("uk", "Ukrainian"),
-        ("cs", "Czech"),
-        ("sv", "Swedish"),
-        ("da", "Danish"),
-        ("fi", "Finnish"),
-        ("no", "Norwegian"),
-    ];
+    // Language selector: auto-detect plus every language the models know.
+    let mut languages: Vec<(&str, &str)> = Language::all()
+        .iter()
+        .map(|l| (l.code(), l.name()))
+        .collect();
+    languages.sort_by_key(|(_, name)| *name);
+    languages.insert(0, ("auto", "Auto-detect"));
     let lang_names: Vec<&str> = languages.iter().map(|(_, name)| *name).collect();
-    let lang_list = gtk::StringList::new(&lang_names);
 
     let lang_row = adw::ComboRow::builder()
         .title("Language")
-        .subtitle("Language for speech recognition")
-        .model(&lang_list)
+        .subtitle("Auto-detect also follows a switch of language between sentences")
+        .model(&gtk::StringList::new(&lang_names))
+        .expression(gtk::PropertyExpression::new(
+            gtk::StringObject::static_type(),
+            None::<&gtk::Expression>,
+            "string",
+        ))
+        .enable_search(true)
         .build();
-
     let lang_idx = languages
         .iter()
         .position(|(code, _)| *code == config.language)
         .unwrap_or(0);
     lang_row.set_selected(lang_idx as u32);
+    lang_row.connect_selected_notify(move |row| {
+        if let Some((code, _)) = languages.get(row.selected() as usize) {
+            save(|c| c.language = code.to_string());
+            info!("Language preference changed to '{code}'");
+        }
+    });
+    group.add(&lang_row);
 
-    // Save language on change.
+    // Hotkey: applied (and bound) when the user presses Enter or the ✓ button.
+    let hotkey_row = adw::EntryRow::builder()
+        .title("Global Hotkey (e.g. Super+Shift+Space, Ctrl+Alt+D, F9)")
+        .text(&config.hotkey)
+        .show_apply_button(true)
+        .build();
     {
-        let config_for_lang = config.clone();
-        let initial_lang_idx = std::sync::atomic::AtomicU32::new(lang_idx as u32);
-        let first_lang_change = std::sync::atomic::AtomicBool::new(true);
-
-        lang_row.connect_notify(Some("selected"), move |row, _| {
-            let idx = row.selected();
-            use std::sync::atomic::Ordering::Relaxed;
-            if first_lang_change.load(Relaxed) && idx == initial_lang_idx.load(Relaxed) {
-                first_lang_change.store(false, Relaxed);
-                return;
-            }
-            first_lang_change.store(false, Relaxed);
-
-            if let Some((code, _)) = languages.get(idx as usize) {
-                let mut cfg = config_for_lang.clone();
-                cfg.language = code.to_string();
-                if let Err(e) = cfg.save() {
-                    error!("Failed to save language preference: {e}");
+        let ctx = ctx.clone();
+        let prefs_window = prefs_window.clone();
+        hotkey_row.connect_apply(move |row| {
+            let hotkey = row.text().trim().to_string();
+            match parse_hotkey(&hotkey) {
+                Ok(_) => {
+                    row.remove_css_class("error");
+                    save(|c| c.hotkey = hotkey.clone());
+                    ctx.send(AppAction::HotkeyChanged);
+                    prefs_window.add_toast(adw::Toast::new(&format!("Hotkey set to {hotkey}")));
                 }
-                info!("Language preference changed to '{}'", code);
+                Err(e) => {
+                    row.add_css_class("error");
+                    prefs_window.add_toast(adw::Toast::new(&format!("Invalid hotkey: {e}")));
+                }
             }
         });
     }
-
-    dictation_group.add(&lang_row);
-
-    let hotkey_row = adw::EntryRow::builder()
-        .title("Global Hotkey")
-        .text(&config.hotkey)
-        .build();
-    dictation_group.add(&hotkey_row);
+    group.add(&hotkey_row);
 
     let auto_paste_row = adw::SwitchRow::builder()
         .title("Auto-paste to active window")
-        .subtitle("Type transcribed text into the focused window automatically")
+        .subtitle("Insert the text where the cursor is. It is always copied to the clipboard too")
         .active(config.auto_paste)
         .build();
-    dictation_group.add(&auto_paste_row);
+    auto_paste_row.connect_active_notify(|row| {
+        let active = row.is_active();
+        save(|c| c.auto_paste = active);
+    });
+    group.add(&auto_paste_row);
 
-    // -- Audio device -------------------------------------------------------
-    let device_names = CpalCapture::new()
-        .ok()
-        .and_then(|c| c.list_physical_devices().ok())
-        .unwrap_or_default();
-
-    if !device_names.is_empty() {
-        let device_refs: Vec<&str> = device_names.iter().map(|s| s.as_str()).collect();
-        let device_model = gtk::StringList::new(&device_refs);
-
-        let device_row = adw::ComboRow::builder()
-            .title("Audio Input Device")
-            .subtitle("Uses the system default device")
-            .model(&device_model)
-            .build();
-
-        dictation_group.add(&device_row);
+    let shortcuts = [
+        (PasteShortcut::CtrlV, "Ctrl+V"),
+        (PasteShortcut::CtrlShiftV, "Ctrl+Shift+V (terminals)"),
+        (PasteShortcut::ShiftInsert, "Shift+Insert"),
+    ];
+    let shortcut_names: Vec<&str> = shortcuts.iter().map(|(_, name)| *name).collect();
+    let shortcut_row = adw::ComboRow::builder()
+        .title("Paste shortcut")
+        .subtitle("For GNOME and KDE on Wayland")
+        .model(&gtk::StringList::new(&shortcut_names))
+        .build();
+    if let Some(idx) = shortcuts
+        .iter()
+        .position(|(s, _)| *s == config.paste_shortcut)
+    {
+        shortcut_row.set_selected(idx as u32);
     }
+    shortcut_row.connect_selected_notify(move |row| {
+        if let Some((shortcut, _)) = shortcuts.get(row.selected() as usize) {
+            save(|c| c.paste_shortcut = *shortcut);
+        }
+    });
+    group.add(&shortcut_row);
 
-    general_page.add(&dictation_group);
+    // Microphone: the system default (which follows the desktop's sound
+    // settings) or a specific sound card.
+    let devices = CpalCapture::new()
+        .map(|c| c.list_input_devices())
+        .unwrap_or_default();
+    let mut device_names = vec!["System default".to_string()];
+    device_names.extend(devices.iter().map(|d| d.label.clone()));
+    let device_name_refs: Vec<&str> = device_names.iter().map(String::as_str).collect();
+    let device_row = adw::ComboRow::builder()
+        .title("Microphone")
+        .subtitle("The system default follows your desktop's sound settings")
+        .model(&gtk::StringList::new(&device_name_refs))
+        .build();
+    let selected = config
+        .input_device
+        .as_ref()
+        .and_then(|id| devices.iter().position(|d| d.id == *id))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    device_row.set_selected(selected as u32);
+    {
+        let ctx = ctx.clone();
+        device_row.connect_selected_notify(move |row| {
+            let choice = match row.selected() as usize {
+                0 => None,
+                i => devices.get(i - 1).map(|d| d.id.clone()),
+            };
+            info!("Microphone set to {choice:?}");
+            save(|c| c.input_device = choice);
+            ctx.send(AppAction::SettingsChanged);
+        });
+    }
+    group.add(&device_row);
 
-    // -- Text Formatting group ----------------------------------------------
-    let formatting_group = adw::PreferencesGroup::builder()
+    group
+}
+
+// ---------------------------------------------------------------------------
+// Text formatting
+// ---------------------------------------------------------------------------
+
+fn formatting_group(
+    ctx: &AppContext,
+    config: &AppConfig,
+    prefs_window: &adw::PreferencesWindow,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
         .title("Text Formatting")
         .build();
+
+    let tidy_row = adw::SwitchRow::builder()
+        .title("Tidy up text")
+        .subtitle("Capital letters, spacing around punctuation, and paragraphs at long pauses")
+        .active(config.format.enabled)
+        .build();
+    tidy_row.connect_active_notify(|row| {
+        let active = row.is_active();
+        save(|c| c.format.enabled = active);
+    });
+    group.add(&tidy_row);
 
     let llm_row = adw::SwitchRow::builder()
         .title("AI-powered formatting")
         .subtitle(
-            "Uses a local LLM (~490 MB download) to intelligently format dictated text. \
-             Adds 1\u{2013}2s (GPU) or 5\u{2013}9s (CPU) per dictation.",
+            "Uses a local language model (~490 MB download) to punctuate and lay out \
+             dictated text. Adds 1\u{2013}2 s (GPU) or 5\u{2013}9 s (CPU) per dictation.",
         )
         .active(config.format.llm_enabled)
         .build();
-
     {
-        let config_for_llm = config.clone();
-        let handle_for_llm = tokio_handle.clone();
-
+        let ctx = ctx.clone();
+        let prefs_window = prefs_window.clone();
         llm_row.connect_active_notify(move |row| {
             let enabled = row.is_active();
-            let mut cfg = config_for_llm.clone();
-            cfg.format.llm_enabled = enabled;
-            if let Err(e) = cfg.save() {
-                error!("Failed to save LLM formatting preference: {e}");
+            save(|c| c.format.llm_enabled = enabled);
+            info!("AI formatting set to {enabled}");
+            if !enabled {
+                return;
             }
-            info!("LLM formatting set to {enabled}");
-
-            if enabled {
-                let llm_mgr = LlmModelManager::new(AppConfig::llm_models_dir());
-                if llm_mgr.is_ready() {
-                    row.set_subtitle(
-                        "Model ready \u{2014} formatting will apply on next dictation",
-                    );
-                    return;
+            let row = row.clone();
+            let prefs_window = prefs_window.clone();
+            models::activate_formatter(&ctx, move |event| {
+                row.set_subtitle(&models::describe(&event, "the AI model"));
+                match event {
+                    ModelEvent::Ready => row.set_subtitle(
+                        "Model ready \u{2014} formatting applies to the next dictation",
+                    ),
+                    ModelEvent::Failed(ref e) => {
+                        // Don't leave the switch on when it cannot work.
+                        save(|c| c.format.llm_enabled = false);
+                        row.set_active(false);
+                        prefs_window.add_toast(adw::Toast::new(e));
+                    }
+                    _ => {}
                 }
-
-                // Trigger download.
-                info!("Starting LLM model download");
-                let (prog_tx, prog_rx) = std_mpsc::channel::<Option<f64>>();
-
-                handle_for_llm.spawn(async move {
-                    let mgr = LlmModelManager::new(AppConfig::llm_models_dir());
-                    let tx = prog_tx.clone();
-                    let progress_cb = std::sync::Arc::new(move |downloaded: u64, total: u64| {
-                        if total > 0 {
-                            let _ = tx.send(Some(downloaded as f64 / total as f64));
-                        }
-                    });
-                    let ok = mgr.download_all(Some(progress_cb)).await.is_ok();
-                    if ok {
-                        info!("LLM model download complete");
-                    } else {
-                        error!("LLM model download failed");
-                    }
-                    let _ = prog_tx.send(None);
-                });
-
-                let row_ref = row.clone();
-                row.set_subtitle("Downloading AI model...");
-
-                glib::timeout_add_local(Duration::from_millis(200), move || {
-                    loop {
-                        match prog_rx.try_recv() {
-                            Ok(Some(frac)) => {
-                                let pct = (frac * 100.0) as u32;
-                                row_ref.set_subtitle(&format!("Downloading AI model... {pct}%"));
-                            }
-                            Ok(None) => {
-                                row_ref.set_subtitle(
-                                    "Model ready \u{2014} formatting will apply on next dictation",
-                                );
-                                return glib::ControlFlow::Break;
-                            }
-                            Err(std_mpsc::TryRecvError::Empty) => break,
-                            Err(std_mpsc::TryRecvError::Disconnected) => {
-                                row_ref.set_subtitle("Download failed");
-                                return glib::ControlFlow::Break;
-                            }
-                        }
-                    }
-                    glib::ControlFlow::Continue
-                });
-            }
+            });
         });
     }
+    group.add(&llm_row);
 
-    formatting_group.add(&llm_row);
-    general_page.add(&formatting_group);
+    group
+}
 
-    // -- Appearance group ---------------------------------------------------
-    let appearance_group = adw::PreferencesGroup::builder().title("Appearance").build();
+// ---------------------------------------------------------------------------
+// Appearance
+// ---------------------------------------------------------------------------
 
-    let theme_model = gtk::StringList::new(&["System", "Light", "Dark"]);
+fn appearance_group(ctx: &AppContext, config: &AppConfig) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Appearance").build();
+
+    let themes = [Theme::System, Theme::Light, Theme::Dark];
     let theme_row = adw::ComboRow::builder()
         .title("Theme")
-        .model(&theme_model)
+        .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
         .build();
-
-    let theme_index = match config.theme {
-        linux_whisper_core::config::Theme::System => 0u32,
-        linux_whisper_core::config::Theme::Light => 1,
-        linux_whisper_core::config::Theme::Dark => 2,
-    };
-    theme_row.set_selected(theme_index);
-
-    appearance_group.add(&theme_row);
+    if let Some(idx) = themes.iter().position(|t| *t == config.theme) {
+        theme_row.set_selected(idx as u32);
+    }
+    theme_row.connect_selected_notify(move |row| {
+        if let Some(&theme) = themes.get(row.selected() as usize) {
+            save(|c| c.theme = theme);
+            crate::apply_theme(theme);
+        }
+    });
+    group.add(&theme_row);
 
     let confidence_row = adw::SwitchRow::builder()
         .title("Show confidence scores")
-        .subtitle("Display word-level confidence in transcription results")
+        .subtitle("Show how sure the model was about each transcribed segment")
         .active(config.show_confidence)
         .build();
-    appearance_group.add(&confidence_row);
+    {
+        let ctx = ctx.clone();
+        confidence_row.connect_active_notify(move |row| {
+            let active = row.is_active();
+            save(|c| c.show_confidence = active);
+            ctx.send(AppAction::SettingsChanged);
+        });
+    }
+    group.add(&confidence_row);
 
-    general_page.add(&appearance_group);
+    let background_row = adw::SwitchRow::builder()
+        .title("Keep running when the window is closed")
+        .subtitle("So the hotkey keeps working. Quit from the menu or the tray icon")
+        .active(config.minimize_to_tray)
+        .build();
+    background_row.connect_active_notify(|row| {
+        let active = row.is_active();
+        save(|c| c.minimize_to_tray = active);
+    });
+    group.add(&background_row);
 
-    // -- Model storage with expandable delete list --------------------------
-    let storage_group = adw::PreferencesGroup::builder()
+    group
+}
+
+// ---------------------------------------------------------------------------
+// Model storage
+// ---------------------------------------------------------------------------
+
+fn storage_group(ctx: &AppContext) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
         .title("Model Storage")
         .description("Manage downloaded whisper models")
         .build();
 
     let mgr = ModelManager::new(AppConfig::models_dir());
-    let all = model_registry::all_models();
-    let downloaded: Vec<_> = all.iter().filter(|m| mgr.is_downloaded(m)).collect();
+    let downloaded = mgr.list_downloaded();
     let total_size: u64 = downloaded.iter().map(|m| m.size_bytes).sum();
 
     // Expander row that shows downloaded models when clicked.
@@ -402,11 +392,16 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
         .show_enable_switch(false)
         .build();
 
-    // Add a row for each downloaded model with a delete button.
+    let loaded = ctx.worker.loaded_model();
     for model in &downloaded {
+        let in_use = loaded.as_deref() == Some(model.name);
         let row = adw::ActionRow::builder()
             .title(pretty_model_name(model.name))
-            .subtitle(format_bytes(model.size_bytes))
+            .subtitle(if in_use {
+                format!("{} \u{2014} in use", format_bytes(model.size_bytes))
+            } else {
+                format_bytes(model.size_bytes)
+            })
             .build();
 
         let delete_btn = gtk::Button::builder()
@@ -416,25 +411,20 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
             .tooltip_text("Delete model")
             .build();
 
-        let model_clone = (*model).clone();
+        let model_ref = *model;
         let row_ref = row.clone();
         let expander_ref = storage_expander.clone();
 
         delete_btn.connect_clicked(move |btn| {
             let mgr = ModelManager::new(AppConfig::models_dir());
-            match mgr.delete(&model_clone) {
+            match mgr.delete(model_ref) {
                 Ok(()) => {
-                    info!("Deleted model '{}'", model_clone.name);
+                    info!("Deleted model '{}'", model_ref.name);
                     btn.set_visible(false);
                     row_ref.set_subtitle("Deleted");
                     row_ref.set_sensitive(false);
 
-                    // Update expander subtitle.
-                    let mgr = ModelManager::new(AppConfig::models_dir());
-                    let remaining: Vec<_> = model_registry::all_models()
-                        .iter()
-                        .filter(|m| mgr.is_downloaded(m))
-                        .collect();
+                    let remaining = mgr.list_downloaded();
                     let size: u64 = remaining.iter().map(|m| m.size_bytes).sum();
                     expander_ref.set_subtitle(&format!(
                         "{} model(s) \u{2014} {}",
@@ -460,32 +450,92 @@ pub fn show_preferences(tokio_handle: &tokio::runtime::Handle) {
         storage_expander.add_row(&empty_row);
     }
 
-    storage_group.add(&storage_expander);
+    group.add(&storage_expander);
 
-    general_page.add(&storage_group);
+    let llm_mgr = LlmModelManager::new(AppConfig::llm_models_dir());
+    if llm_mgr.is_ready() {
+        let llm_row = adw::ActionRow::builder()
+            .title("AI formatting model")
+            .subtitle("Qwen2.5 0.5B")
+            .build();
+        let delete_btn = gtk::Button::builder()
+            .icon_name("edit-delete-symbolic")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat", "circular", "error"])
+            .tooltip_text("Delete model")
+            .build();
+        let row_ref = llm_row.clone();
+        delete_btn.connect_clicked(move |btn| match llm_mgr.delete_all() {
+            Ok(()) => {
+                save(|c| c.format.llm_enabled = false);
+                btn.set_visible(false);
+                row_ref.set_subtitle("Deleted \u{2014} AI formatting turned off");
+                row_ref.set_sensitive(false);
+            }
+            Err(e) => error!("Failed to delete the AI model: {e}"),
+        });
+        llm_row.add_suffix(&delete_btn);
+        group.add(&llm_row);
+    }
 
-    // -- System note --------------------------------------------------------
-    let system_group = adw::PreferencesGroup::builder()
-        .title("System")
-        .description(
-            "Global hotkeys require access to /dev/input devices.\n\
-             To enable: sudo usermod -aG input $USER &amp;&amp; reboot",
-        )
-        .build();
-
-    general_page.add(&system_group);
-
-    prefs_window.add(&general_page);
-
-    // -----------------------------------------------------------------------
-    // Present
-    // -----------------------------------------------------------------------
-    prefs_window.present();
+    group
 }
+
+// ---------------------------------------------------------------------------
+// System
+// ---------------------------------------------------------------------------
+
+/// What the global hotkey and auto-paste need from the system, and whether
+/// this system provides it.
+fn system_group() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("System").build();
+
+    let hotkey_ok = check_input_group_membership();
+    let hotkey_row = adw::ActionRow::builder()
+        .title("Global hotkey")
+        .subtitle(if hotkey_ok {
+            "You are in the input group, so the hotkey can read the keyboard"
+        } else {
+            "Needs the input group: sudo usermod -aG input $USER, then log out and back in"
+        })
+        .subtitle_selectable(true)
+        .build();
+    hotkey_row.add_prefix(&status_icon(hotkey_ok));
+    group.add(&hotkey_row);
+
+    let paste_ok = UinputPaster::is_permitted();
+    let paste_row = adw::ActionRow::builder()
+        .title("Pasting on GNOME and KDE")
+        .subtitle(if paste_ok {
+            "Ready: text is pasted with a virtual keyboard"
+        } else {
+            "Needs access to /dev/uinput, which the udev rule installed with \
+             Linux Whisper grants. Without it the text is only copied to the clipboard"
+        })
+        .build();
+    paste_row.add_prefix(&status_icon(paste_ok));
+    group.add(&paste_row);
+
+    group
+}
+
+fn status_icon(ok: bool) -> gtk::Image {
+    let icon = gtk::Image::from_icon_name(if ok {
+        "emblem-ok-symbolic"
+    } else {
+        "dialog-warning-symbolic"
+    });
+    icon.add_css_class(if ok { "success" } else { "warning" });
+    icon
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Make model names more human-friendly.
 /// "base" → "Base", "tiny.en" → "Tiny EN", "large-v3" → "Large V3"
-fn pretty_model_name(name: &str) -> String {
+pub fn pretty_model_name(name: &str) -> String {
     match name {
         "tiny.en" => "Tiny EN".to_string(),
         "base.en" => "Base EN".to_string(),
@@ -503,7 +553,7 @@ fn pretty_model_name(name: &str) -> String {
 }
 
 /// Format a byte count into a human-readable string (e.g. "74 MB", "1.4 GB").
-fn format_bytes(bytes: u64) -> String {
+pub fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1_024;
     const MB: u64 = 1_024 * KB;
     const GB: u64 = 1_024 * MB;

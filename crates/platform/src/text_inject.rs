@@ -1,5 +1,15 @@
+use std::fs::OpenOptions;
+use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::Duration;
 
+use evdev::uinput::VirtualDevice;
+use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
+use linux_whisper_core::config::PasteShortcut;
+use tracing::{info, warn};
+
+use crate::clipboard::create_clipboard;
 use crate::display::DisplayServer;
 
 /// Errors that can occur during text injection.
@@ -186,13 +196,221 @@ impl TextInjector for YdotoolInjector {
     }
 }
 
+/// Pastes the clipboard into the focused window by pressing the paste
+/// shortcut on a virtual keyboard (`/dev/uinput`). Unlike wtype, this works on
+/// every compositor, including GNOME and KDE, and with any text.
+pub struct UinputPaster {
+    shortcut: PasteShortcut,
+}
+
+/// The virtual keyboard, created once and kept: the compositor needs a moment
+/// to pick up a new input device, so a fresh one per paste would be too slow.
+static VIRTUAL_KEYBOARD: Mutex<Option<VirtualDevice>> = Mutex::new(None);
+
+impl UinputPaster {
+    pub fn new(shortcut: PasteShortcut) -> Self {
+        Self { shortcut }
+    }
+
+    /// Whether the virtual keyboard can be created (write access to
+    /// `/dev/uinput`, which the udev rule installed with the app grants).
+    pub fn is_permitted() -> bool {
+        OpenOptions::new().write(true).open("/dev/uinput").is_ok()
+    }
+
+    /// Create the virtual keyboard ahead of the first paste.
+    pub fn prepare() -> Result<(), InjectError> {
+        with_virtual_keyboard(|_| Ok(()))
+    }
+}
+
+impl TextInjector for UinputPaster {
+    /// The text must already be on the clipboard.
+    fn inject_text(&self, _text: &str) -> Result<(), InjectError> {
+        let (modifiers, key) = shortcut_keys(self.shortcut);
+        with_virtual_keyboard(|dev| {
+            let mut send = |code: KeyCode, value: i32| {
+                dev.emit(&[InputEvent::new(EventType::KEY.0, code.code(), value)])
+                    .map_err(|e| InjectError::InjectFailed(format!("virtual keyboard: {e}")))
+            };
+            for &m in modifiers {
+                send(m, 1)?;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            send(key, 1)?;
+            std::thread::sleep(Duration::from_millis(20));
+            send(key, 0)?;
+            for &m in modifiers.iter().rev() {
+                send(m, 0)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        Self::is_permitted()
+    }
+}
+
+/// Modifier keys and key that make up a paste shortcut.
+fn shortcut_keys(shortcut: PasteShortcut) -> (&'static [KeyCode], KeyCode) {
+    match shortcut {
+        PasteShortcut::CtrlV => (&[KeyCode::KEY_LEFTCTRL], KeyCode::KEY_V),
+        PasteShortcut::CtrlShiftV => (
+            &[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT],
+            KeyCode::KEY_V,
+        ),
+        PasteShortcut::ShiftInsert => (&[KeyCode::KEY_LEFTSHIFT], KeyCode::KEY_INSERT),
+    }
+}
+
+fn with_virtual_keyboard<T>(
+    f: impl FnOnce(&mut VirtualDevice) -> Result<T, InjectError>,
+) -> Result<T, InjectError> {
+    let mut guard = VIRTUAL_KEYBOARD
+        .lock()
+        .map_err(|_| InjectError::InjectFailed("virtual keyboard lock poisoned".into()))?;
+    if guard.is_none() {
+        // Declare the standard keyboard keys, not just the four it presses:
+        // udev only tags a device as a keyboard (ID_INPUT_KEYBOARD) when it
+        // has the usual key block, and compositors treat it accordingly.
+        let mut keys = AttributeSet::<KeyCode>::new();
+        for code in KeyCode::KEY_ESC.code()..=KeyCode::KEY_MICMUTE.code() {
+            keys.insert(KeyCode::new(code));
+        }
+        let device = VirtualDevice::builder()
+            .and_then(|b| b.name("Linux Whisper paste keyboard").with_keys(&keys))
+            .and_then(|b| b.build())
+            .map_err(|e| {
+                InjectError::ToolNotFound(format!("cannot create virtual keyboard: {e}"))
+            })?;
+        *guard = Some(device);
+        // Give the compositor time to add the new keyboard.
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let device = guard
+        .as_mut()
+        .ok_or_else(|| InjectError::InjectFailed("virtual keyboard missing".into()))?;
+    f(device)
+}
+
+/// How dictated text reached the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// Typed into the focused window by the named tool.
+    Typed(&'static str),
+    /// Pasted into the focused window with the paste shortcut.
+    Pasted,
+    /// Only copied to the clipboard; the reason says why it was not inserted.
+    ClipboardOnly(String),
+    /// Neither inserted nor copied.
+    Failed(String),
+}
+
+/// Copy `text` to the clipboard and, when `insert` is set, put it into the
+/// focused window with the first method that works on this desktop:
+///
+/// - Wayland: wtype (wlroots compositors), then the virtual-keyboard paste
+///   (GNOME, KDE, any compositor), then ydotool.
+/// - X11: xdotool, then the virtual-keyboard paste.
+pub fn deliver_text(
+    display: &DisplayServer,
+    text: &str,
+    insert: bool,
+    shortcut: PasteShortcut,
+) -> Delivery {
+    let copied = match create_clipboard(display).set_text(text) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!("Clipboard copy failed: {e}");
+            false
+        }
+    };
+
+    if !insert {
+        return if copied {
+            Delivery::ClipboardOnly("auto-paste is turned off".into())
+        } else {
+            Delivery::Failed("could not copy to the clipboard".into())
+        };
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+
+    // Type the text directly where the desktop allows it.
+    let typist: Option<(Box<dyn TextInjector>, &'static str)> = match display {
+        DisplayServer::Wayland => Some((Box::new(WtypeInjector::new()), "wtype")),
+        DisplayServer::X11 => Some((Box::new(XdotoolInjector::new()), "xdotool")),
+        DisplayServer::Unknown => None,
+    };
+    if let Some((injector, tool)) = typist {
+        if try_typing(injector.as_ref(), tool, text, &mut problems) {
+            return Delivery::Typed(tool);
+        }
+    }
+
+    if copied {
+        let paster = UinputPaster::new(shortcut);
+        if paster.is_available() {
+            match paster.inject_text(text) {
+                Ok(()) => return Delivery::Pasted,
+                Err(e) => problems.push(format!("virtual keyboard: {e}")),
+            }
+        } else {
+            problems.push("no write access to /dev/uinput".into());
+        }
+    }
+
+    if *display != DisplayServer::X11
+        && try_typing(&YdotoolInjector::new(), "ydotool", text, &mut problems)
+    {
+        return Delivery::Typed("ydotool");
+    }
+
+    let reason = if problems.is_empty() {
+        "no way to insert text was found".to_string()
+    } else {
+        problems.join("; ")
+    };
+    if copied {
+        Delivery::ClipboardOnly(reason)
+    } else {
+        Delivery::Failed(reason)
+    }
+}
+
+/// Type `text` with `injector` if its tool is installed, noting failures.
+fn try_typing(
+    injector: &dyn TextInjector,
+    tool: &str,
+    text: &str,
+    problems: &mut Vec<String>,
+) -> bool {
+    if !injector.is_available() {
+        return false;
+    }
+    match injector.inject_text(text) {
+        Ok(()) => true,
+        Err(e) => {
+            info!("{tool} could not insert the text: {e}");
+            problems.push(format!("{tool}: {e}"));
+            false
+        }
+    }
+}
+
 /// Check if a binary is available on `$PATH`.
-fn which(binary: &str) -> bool {
-    Command::new("which")
-        .arg(binary)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub(crate) fn which(binary: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            Path::new(&dir)
+                .join(binary)
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
 }
 
 /// Create the appropriate text injector for the detected display server.
@@ -321,6 +539,74 @@ mod tests {
         assert!(!injector.is_available());
         let err = injector.inject_text("test").unwrap_err();
         assert!(matches!(err, InjectError::ToolNotFound(_)));
+    }
+
+    #[test]
+    fn paste_shortcuts_press_the_right_keys() {
+        assert_eq!(
+            shortcut_keys(PasteShortcut::CtrlV),
+            (&[KeyCode::KEY_LEFTCTRL][..], KeyCode::KEY_V)
+        );
+        assert_eq!(
+            shortcut_keys(PasteShortcut::CtrlShiftV),
+            (
+                &[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT][..],
+                KeyCode::KEY_V
+            )
+        );
+        assert_eq!(
+            shortcut_keys(PasteShortcut::ShiftInsert),
+            (&[KeyCode::KEY_LEFTSHIFT][..], KeyCode::KEY_INSERT)
+        );
+    }
+
+    /// Presses the paste shortcut on the real virtual keyboard and reads the
+    /// key events back. Needs write access to /dev/uinput and read access to
+    /// /dev/input; run with
+    /// `cargo test -p linux-whisper-platform --lib -- --ignored uinput`.
+    /// The test grabs the virtual keyboard before pressing anything, so no
+    /// key reaches the desktop.
+    #[test]
+    #[ignore]
+    fn uinput_paster_presses_the_shortcut() {
+        UinputPaster::prepare().expect("create the virtual keyboard");
+        let mut device = evdev::enumerate()
+            .map(|(_, d)| d)
+            .find(|d| d.name() == Some("Linux Whisper paste keyboard"))
+            .expect("virtual keyboard listed in /dev/input");
+        device.grab().expect("grab the virtual keyboard");
+
+        UinputPaster::new(PasteShortcut::CtrlShiftV)
+            .inject_text("")
+            .expect("press the shortcut");
+
+        let mut keys = Vec::new();
+        while keys.len() < 6 {
+            for ev in device.fetch_events().expect("read events") {
+                if ev.event_type() == EventType::KEY {
+                    keys.push((KeyCode::new(ev.code()), ev.value()));
+                }
+            }
+        }
+        let _ = device.ungrab();
+
+        assert_eq!(
+            keys,
+            vec![
+                (KeyCode::KEY_LEFTCTRL, 1),
+                (KeyCode::KEY_LEFTSHIFT, 1),
+                (KeyCode::KEY_V, 1),
+                (KeyCode::KEY_V, 0),
+                (KeyCode::KEY_LEFTSHIFT, 0),
+                (KeyCode::KEY_LEFTCTRL, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn which_finds_programs_on_path() {
+        assert!(which("sh"));
+        assert!(!which("definitely-not-a-real-program-name"));
     }
 
     #[test]

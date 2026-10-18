@@ -74,13 +74,7 @@ pub struct WlClipboard {
 impl WlClipboard {
     /// Create a new `WlClipboard`. Returns `Err` if `wl-copy` is not on `$PATH`.
     pub fn new() -> Result<Self, ClipboardError> {
-        let available = Command::new("which")
-            .arg("wl-copy")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        if !available {
+        if !crate::text_inject::which("wl-copy") {
             return Err(ClipboardError::AccessError(
                 "wl-copy not found — install wl-clipboard".to_string(),
             ));

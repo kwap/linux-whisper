@@ -1,32 +1,84 @@
-/// Resample audio from one sample rate to another using linear interpolation.
+/// Zero crossings of the windowed-sinc kernel on each side of its centre.
+const ZERO_CROSSINGS: usize = 16;
+
+/// Kernel table entries per zero crossing (linearly interpolated between).
+const TABLE_RESOLUTION: usize = 256;
+
+/// Resample audio from one sample rate to another.
+///
+/// Uses band-limited (windowed-sinc) interpolation. When downsampling, the
+/// kernel is a low-pass filter just below the new Nyquist frequency, so
+/// content above it (e.g. 8–24 kHz of a 48 kHz microphone) is removed instead
+/// of folding back into the speech band as noise.
 ///
 /// If the source and target rates are equal, the samples are returned as-is.
 pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || samples.is_empty() {
+    if from_rate == to_rate || samples.is_empty() || from_rate == 0 || to_rate == 0 {
         return samples.to_vec();
     }
 
-    let ratio = from_rate as f64 / to_rate as f64;
-    let output_len = ((samples.len() as f64) / ratio).ceil() as usize;
+    // Input samples per output sample.
+    let step = from_rate as f64 / to_rate as f64;
+    let output_len = (samples.len() as f64 / step).ceil() as usize;
+
+    // Cutoff at 95% of the lower of the two Nyquist frequencies, expressed as
+    // a fraction of the input Nyquist frequency.
+    let cutoff = 0.95 / step.max(1.0);
+    let half_width = ZERO_CROSSINGS as f64 / cutoff;
+    let table = kernel_table();
+    let last_input = samples.len() - 1;
+
     let mut output = Vec::with_capacity(output_len);
-
     for i in 0..output_len {
-        let src_idx = i as f64 * ratio;
-        let idx_floor = src_idx.floor() as usize;
-        let frac = (src_idx - idx_floor as f64) as f32;
+        let centre = i as f64 * step;
+        let first = (centre - half_width).ceil().max(0.0) as usize;
+        let last = ((centre + half_width).floor() as usize).min(last_input);
 
-        let sample = if idx_floor + 1 < samples.len() {
-            samples[idx_floor] * (1.0 - frac) + samples[idx_floor + 1] * frac
-        } else if idx_floor < samples.len() {
-            samples[idx_floor]
+        let mut acc = 0.0f64;
+        let mut weight_sum = 0.0f64;
+        for (k, &sample) in samples.iter().enumerate().take(last + 1).skip(first) {
+            let pos = (centre - k as f64).abs() * cutoff * TABLE_RESOLUTION as f64;
+            let idx = pos as usize;
+            if idx + 1 >= table.len() {
+                continue;
+            }
+            let frac = pos - idx as f64;
+            let weight = table[idx] + (table[idx + 1] - table[idx]) * frac;
+            acc += sample as f64 * weight;
+            weight_sum += weight;
+        }
+
+        // Normalising by the weights keeps a constant signal constant, also
+        // near the edges where the kernel is cut off.
+        output.push(if weight_sum.abs() > 1e-9 {
+            (acc / weight_sum) as f32
         } else {
             0.0
-        };
-
-        output.push(sample);
+        });
     }
 
     output
+}
+
+/// One half of a Blackman-windowed sinc, sampled at `TABLE_RESOLUTION` points
+/// per zero crossing from the centre out to `ZERO_CROSSINGS`.
+fn kernel_table() -> Vec<f64> {
+    use std::f64::consts::PI;
+
+    let len = ZERO_CROSSINGS * TABLE_RESOLUTION + 1;
+    (0..len)
+        .map(|i| {
+            let x = i as f64 / TABLE_RESOLUTION as f64;
+            let sinc = if i == 0 {
+                1.0
+            } else {
+                (PI * x).sin() / (PI * x)
+            };
+            let w = x / ZERO_CROSSINGS as f64;
+            let window = 0.42 + 0.5 * (PI * w).cos() + 0.08 * (2.0 * PI * w).cos();
+            sinc * window
+        })
+        .collect()
 }
 
 /// Convert multi-channel interleaved audio to mono by averaging all channels.
@@ -94,6 +146,53 @@ mod tests {
             "Expected ~16000 samples, got {}",
             result.len()
         );
+    }
+
+    /// Amplitude of a sine at `freq` Hz in `samples` (single-bin DFT).
+    fn tone_amplitude(samples: &[f32], rate: u32, freq: f64) -> f64 {
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, &s) in samples.iter().enumerate() {
+            let phase = 2.0 * std::f64::consts::PI * freq * n as f64 / rate as f64;
+            re += s as f64 * phase.cos();
+            im += s as f64 * phase.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / samples.len() as f64
+    }
+
+    fn sine(freq: f64, rate: u32, secs: f64) -> Vec<f32> {
+        let n = (rate as f64 * secs) as usize;
+        (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * freq * i as f64 / rate as f64).sin() as f32)
+            .collect()
+    }
+
+    #[test]
+    fn downsample_keeps_speech_band_tone() {
+        let out = resample(&sine(1000.0, 48000, 1.0), 48000, 16000);
+        let amp = tone_amplitude(&out[2000..14000], 16000, 1000.0);
+        assert!((amp - 1.0).abs() < 0.02, "1 kHz amplitude {amp}");
+    }
+
+    #[test]
+    fn downsample_removes_content_above_new_nyquist() {
+        // A 12 kHz tone cannot exist at 16 kHz. Without a low-pass filter it
+        // aliases to 4 kHz.
+        let out = resample(&sine(12000.0, 48000, 1.0), 48000, 16000);
+        let alias = tone_amplitude(&out[2000..14000], 16000, 4000.0);
+        assert!(alias < 0.01, "aliased 4 kHz amplitude {alias}");
+    }
+
+    #[test]
+    fn non_integer_ratio_keeps_tone() {
+        let out = resample(&sine(440.0, 44100, 1.0), 44100, 16000);
+        let amp = tone_amplitude(&out[2000..14000], 16000, 440.0);
+        assert!((amp - 1.0).abs() < 0.02, "440 Hz amplitude {amp}");
+    }
+
+    #[test]
+    fn constant_signal_stays_constant() {
+        let out = resample(&vec![0.5f32; 4410], 44100, 16000);
+        assert!(out.iter().all(|&s| (s - 0.5).abs() < 1e-4));
     }
 
     #[test]

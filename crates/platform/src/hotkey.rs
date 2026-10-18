@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use evdev::{Device, EventType, KeyCode};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -73,61 +75,110 @@ pub fn parse_hotkey(hotkey: &str) -> Result<Vec<KeyCode>, HotkeyError> {
 /// Map a single key name to one or more evdev Key codes.
 /// Modifier keys return both left and right variants.
 fn map_key_name(name: &str) -> Result<Vec<KeyCode>, HotkeyError> {
-    match name.to_lowercase().as_str() {
+    let lower = name.to_lowercase();
+    let key = match lower.as_str() {
         // Modifiers (return both L/R so either physical key matches).
         "super" | "meta" | "logo" | "win" => {
-            Ok(vec![KeyCode::KEY_LEFTMETA, KeyCode::KEY_RIGHTMETA])
+            return Ok(vec![KeyCode::KEY_LEFTMETA, KeyCode::KEY_RIGHTMETA])
         }
-        "shift" => Ok(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT]),
-        "ctrl" | "control" => Ok(vec![KeyCode::KEY_LEFTCTRL, KeyCode::KEY_RIGHTCTRL]),
-        "alt" => Ok(vec![KeyCode::KEY_LEFTALT, KeyCode::KEY_RIGHTALT]),
+        "shift" => return Ok(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT]),
+        "ctrl" | "control" => return Ok(vec![KeyCode::KEY_LEFTCTRL, KeyCode::KEY_RIGHTCTRL]),
+        "alt" => return Ok(vec![KeyCode::KEY_LEFTALT, KeyCode::KEY_RIGHTALT]),
+        "altgr" => KeyCode::KEY_RIGHTALT,
 
         // Common keys.
-        "space" => Ok(vec![KeyCode::KEY_SPACE]),
-        "enter" | "return" => Ok(vec![KeyCode::KEY_ENTER]),
-        "tab" => Ok(vec![KeyCode::KEY_TAB]),
-        "escape" | "esc" => Ok(vec![KeyCode::KEY_ESC]),
-        "backspace" => Ok(vec![KeyCode::KEY_BACKSPACE]),
+        "space" => KeyCode::KEY_SPACE,
+        "enter" | "return" => KeyCode::KEY_ENTER,
+        "tab" => KeyCode::KEY_TAB,
+        "escape" | "esc" => KeyCode::KEY_ESC,
+        "backspace" => KeyCode::KEY_BACKSPACE,
+        "insert" | "ins" => KeyCode::KEY_INSERT,
+        "delete" | "del" => KeyCode::KEY_DELETE,
+        "home" => KeyCode::KEY_HOME,
+        "end" => KeyCode::KEY_END,
+        "pageup" | "pgup" => KeyCode::KEY_PAGEUP,
+        "pagedown" | "pgdn" => KeyCode::KEY_PAGEDOWN,
+        "up" => KeyCode::KEY_UP,
+        "down" => KeyCode::KEY_DOWN,
+        "left" => KeyCode::KEY_LEFT,
+        "right" => KeyCode::KEY_RIGHT,
+        "pause" | "break" => KeyCode::KEY_PAUSE,
+        "scrolllock" => KeyCode::KEY_SCROLLLOCK,
+        "printscreen" | "print" | "sysrq" => KeyCode::KEY_SYSRQ,
+        "menu" | "compose" => KeyCode::KEY_COMPOSE,
+        "grave" | "`" => KeyCode::KEY_GRAVE,
+        "minus" | "-" => KeyCode::KEY_MINUS,
+        "equal" | "=" => KeyCode::KEY_EQUAL,
+        "comma" | "," => KeyCode::KEY_COMMA,
+        "period" | "." => KeyCode::KEY_DOT,
+        "slash" | "/" => KeyCode::KEY_SLASH,
+        "backslash" | "\\" => KeyCode::KEY_BACKSLASH,
+        "semicolon" | ";" => KeyCode::KEY_SEMICOLON,
+        "apostrophe" | "'" => KeyCode::KEY_APOSTROPHE,
+        "bracketleft" | "[" => KeyCode::KEY_LEFTBRACE,
+        "bracketright" | "]" => KeyCode::KEY_RIGHTBRACE,
 
-        // Letters.
-        s if s.len() == 1 && s.chars().next().unwrap().is_ascii_alphabetic() => {
-            let ch = s.chars().next().unwrap().to_ascii_uppercase();
-            let code = (ch as u16) - b'A' as u16 + KeyCode::KEY_A.code();
-            Ok(vec![KeyCode::new(code)])
+        // Letters. Evdev codes follow the physical QWERTY layout, not the
+        // alphabet (KEY_A = 30, KEY_B = 48, ...), so they need a table.
+        s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+            const LETTERS: [KeyCode; 26] = [
+                KeyCode::KEY_A,
+                KeyCode::KEY_B,
+                KeyCode::KEY_C,
+                KeyCode::KEY_D,
+                KeyCode::KEY_E,
+                KeyCode::KEY_F,
+                KeyCode::KEY_G,
+                KeyCode::KEY_H,
+                KeyCode::KEY_I,
+                KeyCode::KEY_J,
+                KeyCode::KEY_K,
+                KeyCode::KEY_L,
+                KeyCode::KEY_M,
+                KeyCode::KEY_N,
+                KeyCode::KEY_O,
+                KeyCode::KEY_P,
+                KeyCode::KEY_Q,
+                KeyCode::KEY_R,
+                KeyCode::KEY_S,
+                KeyCode::KEY_T,
+                KeyCode::KEY_U,
+                KeyCode::KEY_V,
+                KeyCode::KEY_W,
+                KeyCode::KEY_X,
+                KeyCode::KEY_Y,
+                KeyCode::KEY_Z,
+            ];
+            LETTERS[(s.as_bytes()[0] - b'a') as usize]
         }
 
-        // Function keys (F1–F12). Evdev codes: F1–F10 are contiguous (59–68),
-        // F11=87, F12=88.
-        s if s.starts_with('f') || s.starts_with('F') => {
+        // Numbers. KEY_1..KEY_9 are contiguous, KEY_0 follows KEY_9.
+        s if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => match s.as_bytes()[0] {
+            b'0' => KeyCode::KEY_0,
+            d => KeyCode::new(KeyCode::KEY_1.code() + u16::from(d - b'1')),
+        },
+
+        // Function keys F1–F24.
+        s if s.starts_with('f') && s.len() > 1 => {
             let num: u16 = s[1..]
                 .parse()
                 .map_err(|_| HotkeyError::BindError(format!("unknown key: {name}")))?;
-            let key = match num {
+            match num {
                 1..=10 => KeyCode::new(KeyCode::KEY_F1.code() + num - 1),
                 11 => KeyCode::KEY_F11,
                 12 => KeyCode::KEY_F12,
+                13..=24 => KeyCode::new(KeyCode::KEY_F13.code() + num - 13),
                 _ => {
                     return Err(HotkeyError::BindError(format!(
                         "function key out of range: {name}"
                     )));
                 }
-            };
-            Ok(vec![key])
+            }
         }
 
-        // Numbers.
-        s if s.len() == 1 && s.chars().next().unwrap().is_ascii_digit() => {
-            let ch = s.chars().next().unwrap();
-            let code = if ch == '0' {
-                KeyCode::KEY_0.code()
-            } else {
-                KeyCode::KEY_1.code() + (ch as u16 - b'1' as u16)
-            };
-            Ok(vec![KeyCode::new(code)])
-        }
-
-        _ => Err(HotkeyError::BindError(format!("unknown key: {name}"))),
-    }
+        _ => return Err(HotkeyError::BindError(format!("unknown key: {name}"))),
+    };
+    Ok(vec![key])
 }
 
 // ---------------------------------------------------------------------------
@@ -164,13 +215,6 @@ impl EvdevHotkeyManager {
 
 impl HotkeyManager for EvdevHotkeyManager {
     fn bind(&mut self, hotkey: &str) -> Result<(), HotkeyError> {
-        // Check input group membership first.
-        if !check_input_group_membership() {
-            return Err(HotkeyError::PermissionDenied(
-                "user is not in the 'input' group — run: sudo usermod -aG input $USER".into(),
-            ));
-        }
-
         let sender = self.event_sender.clone().ok_or_else(|| {
             HotkeyError::BindError("event sender not set — call set_event_sender() first".into())
         })?;
@@ -182,10 +226,18 @@ impl HotkeyManager for EvdevHotkeyManager {
         );
 
         // Open all keyboard devices.
-        let keyboards = open_keyboard_devices()?;
+        let mut seen = HashSet::new();
+        let keyboards = open_new_keyboards(&mut seen)?;
         if keyboards.is_empty() {
-            return Err(HotkeyError::BindError(
-                "no keyboard devices found in /dev/input/".into(),
+            return Err(HotkeyError::PermissionDenied(
+                if check_input_group_membership() {
+                    "cannot open the keyboards in /dev/input. You are in the input group, \
+                     but it only takes effect after you log out and back in"
+                } else {
+                    "no access to the keyboards in /dev/input. Run: \
+                     sudo usermod -aG input $USER, then log out and back in"
+                }
+                .into(),
             ));
         }
         info!("Monitoring {} keyboard device(s)", keyboards.len());
@@ -204,7 +256,7 @@ impl HotkeyManager for EvdevHotkeyManager {
         let handle = thread::Builder::new()
             .name("evdev-hotkey".into())
             .spawn(move || {
-                hotkey_listener_loop(keyboards, groups, sender, shutdown_clone);
+                hotkey_listener_loop(keyboards, seen, groups, sender, shutdown_clone);
             })
             .map_err(|e| HotkeyError::BindError(format!("failed to spawn listener thread: {e}")))?;
 
@@ -274,6 +326,10 @@ fn combo_active(groups: &[KeyGroup], held: &HashSet<KeyCode>) -> bool {
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 
+/// How often to look for keyboards connected after the hotkey was bound
+/// (e.g. a Bluetooth keyboard that connects after login).
+const HOTPLUG_SCAN_INTERVAL: Duration = Duration::from_secs(3);
+
 /// Calculate exponential backoff: 1, 2, 4, 8, 16, 30, 30, ...
 fn reconnect_backoff_secs(attempt: u32) -> u64 {
     let shift = attempt.saturating_sub(1).min(5);
@@ -300,11 +356,15 @@ fn has_stale_revents(pollfds: &[PollFd]) -> bool {
 
 /// Try to reopen keyboard devices. Returns `None` if shutdown was requested
 /// or no devices could be opened.
-fn try_reopen_devices(shutdown: &Arc<AtomicBool>) -> Option<Vec<Device>> {
+fn try_reopen_devices(
+    shutdown: &Arc<AtomicBool>,
+    seen: &mut HashSet<PathBuf>,
+) -> Option<Vec<Device>> {
     if shutdown.load(Ordering::Relaxed) {
         return None;
     }
-    match open_keyboard_devices() {
+    seen.clear();
+    match open_new_keyboards(seen) {
         Ok(devices) if !devices.is_empty() => {
             set_devices_nonblocking(&devices);
             Some(devices)
@@ -322,6 +382,7 @@ fn try_reopen_devices(shutdown: &Arc<AtomicBool>) -> Option<Vec<Device>> {
 
 fn hotkey_listener_loop(
     mut keyboards: Vec<Device>,
+    mut seen: HashSet<PathBuf>,
     groups: Vec<KeyGroup>,
     sender: tokio::sync::mpsc::Sender<HotkeyEvent>,
     shutdown: Arc<AtomicBool>,
@@ -331,6 +392,7 @@ fn hotkey_listener_loop(
     let mut held_keys: HashSet<KeyCode> = HashSet::new();
     let mut combo_was_active = false;
     let mut consecutive_errors: u32 = 0;
+    let mut last_scan = Instant::now();
 
     set_devices_nonblocking(&keyboards);
 
@@ -338,6 +400,20 @@ fn hotkey_listener_loop(
         if shutdown.load(Ordering::Relaxed) {
             debug!("Hotkey listener shutting down");
             return;
+        }
+
+        if last_scan.elapsed() >= HOTPLUG_SCAN_INTERVAL {
+            last_scan = Instant::now();
+            if let Ok(new_devices) = open_new_keyboards(&mut seen) {
+                if !new_devices.is_empty() {
+                    info!(
+                        "Monitoring {} newly connected keyboard(s)",
+                        new_devices.len()
+                    );
+                    set_devices_nonblocking(&new_devices);
+                    keyboards.extend(new_devices);
+                }
+            }
         }
 
         // Poll all device fds with a 200ms timeout.
@@ -393,7 +469,7 @@ fn hotkey_listener_loop(
             );
             thread::sleep(std::time::Duration::from_secs(backoff));
 
-            if let Some(new_devices) = try_reopen_devices(&shutdown) {
+            if let Some(new_devices) = try_reopen_devices(&shutdown, &mut seen) {
                 info!("Reconnected to {} keyboard device(s)", new_devices.len());
                 keyboards = new_devices;
                 held_keys.clear();
@@ -445,8 +521,10 @@ fn hotkey_listener_loop(
 // Device discovery
 // ---------------------------------------------------------------------------
 
-/// Open all `/dev/input/event*` devices that support keyboard keys.
-fn open_keyboard_devices() -> Result<Vec<Device>, HotkeyError> {
+/// Open the `/dev/input/event*` devices not yet in `seen` that support
+/// keyboard keys. Every examined path is added to `seen`, so later calls only
+/// look at devices connected since.
+fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, HotkeyError> {
     let entries = fs::read_dir("/dev/input")
         .map_err(|e| HotkeyError::PermissionDenied(format!("cannot read /dev/input: {e}")))?;
 
@@ -456,7 +534,7 @@ fn open_keyboard_devices() -> Result<Vec<Device>, HotkeyError> {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        if !name.starts_with("event") {
+        if !name.starts_with("event") || !seen.insert(path.clone()) {
             continue;
         }
 
@@ -652,6 +730,36 @@ mod tests {
     fn parse_hotkey_invalid_key() {
         let result = parse_hotkey("Super+InvalidKey");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_hotkey_letters_use_their_own_key_codes() {
+        // Evdev codes are in keyboard order, not alphabetical order.
+        assert_eq!(parse_hotkey("D").unwrap(), vec![KeyCode::KEY_D]);
+        assert_eq!(parse_hotkey("b").unwrap(), vec![KeyCode::KEY_B]);
+        assert_eq!(parse_hotkey("Z").unwrap(), vec![KeyCode::KEY_Z]);
+        let all: Vec<KeyCode> = ('a'..='z')
+            .map(|c| parse_hotkey(&c.to_string()).unwrap()[0])
+            .collect();
+        let unique: HashSet<KeyCode> = all.iter().copied().collect();
+        assert_eq!(unique.len(), 26);
+    }
+
+    #[test]
+    fn parse_hotkey_extended_keys() {
+        assert_eq!(parse_hotkey("F13").unwrap(), vec![KeyCode::KEY_F13]);
+        assert_eq!(parse_hotkey("F24").unwrap(), vec![KeyCode::KEY_F24]);
+        assert_eq!(parse_hotkey("Pause").unwrap(), vec![KeyCode::KEY_PAUSE]);
+        assert_eq!(parse_hotkey("Insert").unwrap(), vec![KeyCode::KEY_INSERT]);
+        assert_eq!(parse_hotkey("`").unwrap(), vec![KeyCode::KEY_GRAVE]);
+        assert!(parse_hotkey("F25").is_err());
+        assert!(parse_hotkey("Ctrl+").is_err());
+    }
+
+    #[test]
+    fn parse_hotkey_digits() {
+        assert_eq!(parse_hotkey("0").unwrap(), vec![KeyCode::KEY_0]);
+        assert_eq!(parse_hotkey("9").unwrap(), vec![KeyCode::KEY_9]);
     }
 
     #[test]

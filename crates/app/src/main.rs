@@ -1,7 +1,8 @@
+mod context;
 mod services;
 mod ui;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
@@ -12,20 +13,28 @@ use gtk::{gio, glib};
 use tracing::{error, info, warn};
 
 use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
-use linux_whisper_core::config::AppConfig;
+use linux_whisper_core::config::{AppConfig, Theme};
+use linux_whisper_core::format::tidy_text;
 use linux_whisper_core::model::Transcript;
 use linux_whisper_llm::model_manager::LlmModelManager;
 use linux_whisper_llm::worker::LlmWorker;
+use linux_whisper_platform::display::{self, DisplayServer};
 use linux_whisper_platform::hotkey::{EvdevHotkeyManager, HotkeyEvent, HotkeyManager};
+use linux_whisper_platform::text_inject::{Delivery, UinputPaster};
 use linux_whisper_platform::tray::{spawn_tray, TrayAction, TrayHandle};
 use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
 use linux_whisper_whisper::worker::WhisperWorker;
 
+use context::{AppAction, AppContext};
 use services::dictation::DictationService;
+use services::models::{self, ModelEvent};
 use ui::window::MainWindow;
 
 const APP_ID: &str = "com.linuxwhisper.LinuxWhisper";
+
+/// Recordings shorter than this are treated as an accidental double press.
+const MIN_RECORDING_SECS: f64 = 0.3;
 
 fn main() {
     // Initialize logging.
@@ -49,90 +58,41 @@ fn main() {
     }
 
     if app.is_remote() {
-        info!("Linux Whisper is already running — exiting duplicate instance");
+        // Starting the app again (e.g. from the applications menu) brings up
+        // the window of the instance that is already running.
+        info!("Linux Whisper is already running — showing its window");
+        app.activate();
         return;
     }
+
+    // Detect the display server while the process is still single-threaded:
+    // the fallback detection may set WAYLAND_DISPLAY for child processes.
+    info!("Display server: {}", display::detect());
 
     // Create a tokio runtime and leak it so it lives for the entire process.
     let rt = Box::leak(Box::new(
         tokio::runtime::Runtime::new().expect("failed to create tokio runtime"),
     ));
-    let tokio_handle = rt.handle().clone();
 
-    // Load persisted configuration.
-    let config = AppConfig::load();
-    info!(
-        "Config: model={}, language={}, hotkey={}",
-        config.model, config.language, config.hotkey
-    );
+    let (actions_tx, actions_rx) = std_mpsc::channel::<AppAction>();
+    let ctx = AppContext {
+        app: app.clone(),
+        rt: rt.handle().clone(),
+        worker: WhisperWorker::new(),
+        llm_worker: LlmWorker::new(),
+        actions: actions_tx,
+    };
 
-    // Create the whisper worker (background inference thread).
-    let worker = WhisperWorker::new();
-
-    // Auto-load the configured model (or fall back to default).
-    let mgr = ModelManager::new(AppConfig::models_dir());
-    let target_model = model_registry::find_model(&config.model).unwrap_or_else(|| {
-        warn!(
-            "Configured model '{}' not in registry; falling back to default",
-            config.model
-        );
-        model_registry::default_model()
-    });
-
-    if mgr.is_downloaded(target_model) {
-        let model_path = mgr.model_path(target_model);
-        info!(
-            "Auto-loading model '{}' from {}",
-            target_model.name,
-            model_path.display()
-        );
-        let worker_clone = worker.clone();
-        rt.block_on(async move {
-            if let Err(e) = worker_clone.load_model(model_path).await {
-                error!("Failed to auto-load model: {e}");
-            }
-        });
-    } else {
-        warn!(
-            "Model '{}' not downloaded — recording will fail until a model is loaded",
-            target_model.name
-        );
-    }
-
-    // Create the LLM worker (background inference thread for text formatting).
-    let llm_worker = LlmWorker::new();
-
-    // Auto-load LLM model if enabled and downloaded.
-    if config.format.llm_enabled {
-        let llm_mgr = LlmModelManager::new(AppConfig::llm_models_dir());
-        if llm_mgr.is_ready() {
-            let model_path = llm_mgr.file_path(linux_whisper_llm::model_registry::model_file());
-            let tokenizer_path =
-                llm_mgr.file_path(linux_whisper_llm::model_registry::tokenizer_file());
-            info!("Auto-loading LLM model from {}", model_path.display());
-            let llm_clone = llm_worker.clone();
-            rt.block_on(async move {
-                if let Err(e) = llm_clone.load_model(model_path, tokenizer_path).await {
-                    error!("Failed to auto-load LLM model: {e}");
-                }
-            });
-        } else {
-            warn!("LLM formatting enabled but model not downloaded");
+    let controller: RefCell<Option<Rc<Controller>>> = RefCell::new(None);
+    let actions_rx = RefCell::new(Some(actions_rx));
+    app.connect_activate(move |_| {
+        if let Some(ref c) = *controller.borrow() {
+            c.show_window();
+            return;
         }
-    }
-
-    // App was already created and registered above for single-instance check.
-    let worker_for_activate = worker.clone();
-    let llm_worker_for_activate = llm_worker.clone();
-    let tokio_handle_for_activate = tokio_handle.clone();
-
-    app.connect_activate(move |app| {
-        on_activate(
-            app,
-            worker_for_activate.clone(),
-            llm_worker_for_activate.clone(),
-            tokio_handle_for_activate.clone(),
-        );
+        if let Some(rx) = actions_rx.borrow_mut().take() {
+            *controller.borrow_mut() = Some(Controller::start(ctx.clone(), rx));
+        }
     });
 
     // Hold the application so it doesn't exit when no windows are open.
@@ -143,329 +103,548 @@ fn main() {
     app.run_with_args::<String>(&[]);
 }
 
-/// Called once when the GTK application activates.
-///
-/// Sets up the tray icon, audio capture, and bridges tray actions into the GTK
-/// main loop via a polling timer.
-fn on_activate(
-    app: &adw::Application,
-    worker: WhisperWorker,
-    llm_worker: LlmWorker,
-    tokio_handle: tokio::runtime::Handle,
-) {
-    // Create audio capture.
-    let capture = match CpalCapture::new() {
-        Ok(c) => {
-            let device_name = c
-                .default_device_name()
-                .unwrap_or_else(|| "<unknown>".into());
-            info!("Audio capture ready — default device: {device_name}");
-            Rc::new(RefCell::new(c))
+/// Owns the long-lived state (recording, tray, hotkey, window) and handles
+/// [`AppAction`]s on the GTK main thread.
+struct Controller {
+    ctx: AppContext,
+    capture: RefCell<Option<CpalCapture>>,
+    recording: Cell<bool>,
+    tray: Option<Arc<TrayHandle>>,
+    /// Whether a tray host is running, i.e. whether the tray icon is visible.
+    tray_visible: bool,
+    window: RefCell<Option<MainWindow>>,
+    hotkey: RefCell<Option<EvdevHotkeyManager>>,
+    hotkey_problem_shown: Cell<bool>,
+    /// The last dictation, shown when the window is opened later.
+    last_dictation: RefCell<Option<(Transcript, String)>>,
+}
+
+impl Controller {
+    fn start(ctx: AppContext, actions_rx: std_mpsc::Receiver<AppAction>) -> Rc<Self> {
+        let config = AppConfig::load();
+        info!(
+            "Config: model={}, language={}, hotkey={}",
+            config.model, config.language, config.hotkey
+        );
+        apply_theme(config.theme);
+
+        // Audio capture.
+        let capture = match CpalCapture::new() {
+            Ok(c) => {
+                let device_name = c
+                    .default_device_name()
+                    .unwrap_or_else(|| "<unknown>".into());
+                info!("Audio capture ready — default device: {device_name}");
+                Some(c)
+            }
+            Err(e) => {
+                error!("Failed to create audio capture: {e}");
+                None
+            }
+        };
+
+        // Tray icon. Tray actions are forwarded to the action channel.
+        let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel::<TrayAction>();
+        let actions = ctx.actions.clone();
+        ctx.rt.spawn(async move {
+            while let Some(action) = tray_rx.recv().await {
+                if actions.send(action.into()).is_err() {
+                    break;
+                }
+            }
+        });
+        let tray = match ctx.rt.block_on(spawn_tray(tray_tx)) {
+            Ok(handle) => {
+                info!("System tray icon spawned");
+                Some(Arc::new(handle))
+            }
+            Err(e) => {
+                error!("Failed to spawn system tray: {e}");
+                None
+            }
+        };
+        let tray_visible = tray.is_some() && tray_host_running();
+        if !tray_visible {
+            warn!(
+                "No system tray is available — keeping the window open instead. \
+                 On GNOME, the AppIndicator extension adds tray support."
+            );
         }
-        Err(e) => {
-            error!("Failed to create audio capture: {e}");
-            return;
+
+        let controller = Rc::new(Self {
+            ctx,
+            capture: RefCell::new(capture),
+            recording: Cell::new(false),
+            tray,
+            tray_visible,
+            window: RefCell::new(None),
+            hotkey: RefCell::new(None),
+            hotkey_problem_shown: Cell::new(false),
+            last_dictation: RefCell::new(None),
+        });
+
+        controller.bind_hotkey();
+
+        // Poll the action channel from the GTK main loop.
+        {
+            let controller = Rc::clone(&controller);
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                while let Ok(action) = actions_rx.try_recv() {
+                    if !controller.handle(action) {
+                        return glib::ControlFlow::Break;
+                    }
+                }
+                glib::ControlFlow::Continue
+            });
         }
-    };
 
-    // Channel for tray→GTK communication (std::sync so we can poll from glib).
-    let (action_tx, action_rx) = std_mpsc::channel::<TrayAction>();
+        // Without a tray icon the window is the only way in.
+        if !controller.tray_visible {
+            controller.show_window();
+        }
+        controller.load_models(&config);
 
-    // We need a tokio::sync::mpsc sender for the tray (which is Send + 'static).
-    let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel::<TrayAction>();
+        // Create the virtual paste keyboard ahead of the first dictation:
+        // the compositor needs a moment to pick up a new input device.
+        if config.auto_paste
+            && display::detect() == DisplayServer::Wayland
+            && UinputPaster::is_permitted()
+        {
+            controller.ctx.rt.spawn_blocking(|| {
+                if let Err(e) = UinputPaster::prepare() {
+                    warn!("Virtual paste keyboard unavailable: {e}");
+                }
+            });
+        }
 
-    // Forward from tokio channel to std channel in a background task.
-    let action_tx_for_bridge = action_tx.clone();
-    tokio_handle.spawn(async move {
-        while let Some(action) = tray_rx.recv().await {
-            if action_tx_for_bridge.send(action).is_err() {
-                break;
+        controller
+    }
+
+    /// Handle one action. Returns `false` once the application is quitting.
+    fn handle(self: &Rc<Self>, action: AppAction) -> bool {
+        match action {
+            AppAction::ToggleRecording => self.toggle_recording(),
+            AppAction::ShowWindow => self.show_window(),
+            AppAction::Preferences => {
+                let parent = self.window.borrow().as_ref().map(|w| w.window.clone());
+                ui::preferences::show_preferences(&self.ctx, parent.as_ref());
+            }
+            AppAction::About => {
+                let parent = self.window.borrow().as_ref().map(|w| w.window.clone());
+                ui::about::show_about(parent.as_ref());
+            }
+            AppAction::Quit => {
+                info!("Quit requested");
+                self.ctx.app.quit();
+                return false;
+            }
+            AppAction::HotkeyChanged => {
+                self.hotkey_problem_shown.set(false);
+                self.bind_hotkey();
+            }
+            AppAction::ModelChanged => {
+                if let Some(ref win) = *self.window.borrow() {
+                    win.sync_model_dropdown();
+                }
+                self.set_tray_status(self.ready_text());
+            }
+            AppAction::SettingsChanged => {
+                if let Some(ref win) = *self.window.borrow() {
+                    win.refresh_rows();
+                }
             }
         }
-    });
+        true
+    }
 
-    // Spawn the tray icon on the tokio runtime.
-    let tray_handle = match tokio_handle.block_on(spawn_tray(tray_tx)) {
-        Ok(handle) => {
-            info!("System tray icon spawned");
-            Arc::new(handle)
-        }
-        Err(e) => {
-            error!("Failed to spawn system tray: {e}");
-            return;
-        }
-    };
+    fn show_window(self: &Rc<Self>) {
+        let mut win = self.window.borrow_mut();
+        let win = win.get_or_insert_with(|| {
+            let win = MainWindow::new(&self.ctx, self.tray_visible);
+            if let Some((transcript, label)) = self.last_dictation.borrow().clone() {
+                win.show_transcript(transcript, &label);
+            }
+            win
+        });
+        win.present();
+    }
 
-    // Set up global hotkeys via evdev.
-    {
+    // -- Models --------------------------------------------------------------
+
+    /// Load the configured whisper model (or offer to download one) and, if
+    /// enabled, the AI formatter.
+    fn load_models(self: &Rc<Self>, config: &AppConfig) {
+        let target = model_registry::find_model(&config.model).unwrap_or_else(|| {
+            warn!(
+                "Configured model '{}' not in registry; falling back to default",
+                config.model
+            );
+            model_registry::default_model()
+        });
+
+        if ModelManager::new(AppConfig::models_dir()).is_downloaded(target) {
+            info!("Loading model '{}'", target.name);
+            self.set_tray_status(format!("Loading the {} model\u{2026}", target.name));
+            let this = Rc::clone(self);
+            models::activate_model(&self.ctx, target, move |event| match event {
+                ModelEvent::Failed(e) => {
+                    error!("Failed to load model: {e}");
+                    this.notify("model", "The speech model could not be loaded", &e);
+                }
+                ModelEvent::Ready => info!("Model '{}' ready", target.name),
+                _ => {}
+            });
+        } else {
+            info!("No model downloaded yet — asking the user to download one");
+            self.set_tray_status("No speech model yet".into());
+            self.show_window();
+            if let Some(ref win) = *self.window.borrow() {
+                win.prompt_model_download();
+            }
+        }
+
+        if config.format.llm_enabled {
+            if LlmModelManager::new(AppConfig::llm_models_dir()).is_ready() {
+                models::activate_formatter(&self.ctx, |event| {
+                    if let ModelEvent::Failed(e) = event {
+                        error!("Failed to load the AI formatter: {e}");
+                    }
+                });
+            } else {
+                warn!("AI formatting enabled but its model is not downloaded");
+            }
+        }
+    }
+
+    // -- Hotkey --------------------------------------------------------------
+
+    fn bind_hotkey(&self) {
         let config = AppConfig::load();
-        let action_tx_for_hotkey = action_tx.clone();
+        // Dropping the previous manager stops its listener thread.
+        self.hotkey.borrow_mut().take();
+
         let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel::<HotkeyEvent>(16);
+        let mut manager = EvdevHotkeyManager::new();
+        manager.set_event_sender(hotkey_tx);
 
-        let mut hotkey_mgr = EvdevHotkeyManager::new();
-        hotkey_mgr.set_event_sender(hotkey_tx);
-
-        match hotkey_mgr.bind(&config.hotkey) {
+        match manager.bind(&config.hotkey) {
             Ok(()) => {
                 info!("Global hotkey '{}' bound successfully", config.hotkey);
-                // Forward hotkey events → TrayAction::ToggleRecording on the action channel.
-                tokio_handle.spawn(async move {
+                let actions = self.ctx.actions.clone();
+                self.ctx.rt.spawn(async move {
                     while let Some(event) = hotkey_rx.recv().await {
                         if event == HotkeyEvent::Pressed
-                            && action_tx_for_hotkey
-                                .send(TrayAction::ToggleRecording)
-                                .is_err()
+                            && actions.send(AppAction::ToggleRecording).is_err()
                         {
                             break;
                         }
                     }
                 });
-                // Leak the manager so the listener thread stays alive.
-                std::mem::forget(hotkey_mgr);
+                *self.hotkey.borrow_mut() = Some(manager);
             }
             Err(e) => {
-                warn!(
-                    "Failed to bind global hotkey '{}': {e}\n\
-                     → To enable: sudo usermod -aG input $USER && reboot",
-                    config.hotkey
-                );
+                warn!("Failed to bind global hotkey '{}': {e}", config.hotkey);
+                if !self.hotkey_problem_shown.replace(true) {
+                    self.notify(
+                        "hotkey",
+                        "The global hotkey is not available",
+                        &format!("{e}. Until then, record from the tray icon or the window."),
+                    );
+                }
             }
         }
     }
 
-    // State for recording toggle.
-    let is_recording = Rc::new(RefCell::new(false));
+    // -- Dictation -----------------------------------------------------------
 
-    // Shared MainWindow — created on first ShowWindow request, reused thereafter.
-    let main_window: Rc<RefCell<Option<MainWindow>>> = Rc::new(RefCell::new(None));
-
-    // Poll the action channel from the GTK main loop (~50ms interval).
-    let app_clone = app.clone();
-    let tokio_handle_clone = tokio_handle.clone();
-    let worker_clone = worker.clone();
-    let llm_worker_clone = llm_worker.clone();
-
-    glib::timeout_add_local(Duration::from_millis(50), move || {
-        while let Ok(action) = action_rx.try_recv() {
-            match action {
-                TrayAction::ToggleRecording => {
-                    handle_toggle_recording(
-                        &capture,
-                        &is_recording,
-                        &worker_clone,
-                        &llm_worker_clone,
-                        &tokio_handle_clone,
-                        &tray_handle,
-                        &main_window,
-                    );
-                }
-                TrayAction::ShowWindow => {
-                    let mut win_opt = main_window.borrow_mut();
-                    if let Some(ref win) = *win_opt {
-                        win.present();
-                    } else {
-                        let win = MainWindow::new(
-                            &app_clone,
-                            worker_clone.clone(),
-                            tokio_handle_clone.clone(),
-                        );
-                        win.present();
-                        *win_opt = Some(win);
-                    }
-                }
-                TrayAction::Preferences => {
-                    ui::preferences::show_preferences(&tokio_handle_clone);
-                }
-                TrayAction::About => {
-                    ui::about::show_about(gtk::Widget::NONE);
-                }
-                TrayAction::Quit => {
-                    info!("Quit requested from tray");
-                    app_clone.quit();
-                    return glib::ControlFlow::Break;
-                }
-            }
+    fn toggle_recording(self: &Rc<Self>) {
+        if self.recording.get() {
+            self.stop_and_transcribe();
+        } else {
+            self.start_recording();
         }
-        glib::ControlFlow::Continue
-    });
-}
+    }
 
-/// Handle the toggle-recording action from the tray.
-fn handle_toggle_recording(
-    capture: &Rc<RefCell<CpalCapture>>,
-    is_recording: &Rc<RefCell<bool>>,
-    worker: &WhisperWorker,
-    llm_worker: &LlmWorker,
-    tokio_handle: &tokio::runtime::Handle,
-    tray_handle: &Arc<TrayHandle>,
-    main_window: &Rc<RefCell<Option<MainWindow>>>,
-) {
-    let mut recording = is_recording.borrow_mut();
+    fn start_recording(self: &Rc<Self>) {
+        let config = AppConfig::load();
 
-    if !*recording {
-        // Start recording.
-        let mut cap = capture.borrow_mut();
-        let device_name = cap
-            .default_device_name()
-            .unwrap_or_else(|| "<unknown>".into());
+        // Without any model there is nothing to transcribe with.
+        let model_on_disk = model_registry::find_model(&config.model)
+            .is_some_and(|m| ModelManager::new(AppConfig::models_dir()).is_downloaded(m));
+        if self.ctx.worker.loaded_model().is_none() && !model_on_disk {
+            self.show_window();
+            if let Some(ref win) = *self.window.borrow() {
+                win.prompt_model_download();
+            }
+            return;
+        }
 
-        match cap.start_recording() {
+        let mut capture = self.capture.borrow_mut();
+        let Some(capture) = capture.as_mut() else {
+            self.notify("record", "Cannot record", "No audio system is available.");
+            return;
+        };
+        capture.set_input_device(config.input_device.clone());
+
+        match capture.start_recording() {
             Ok(()) => {
-                info!("Recording started from {device_name}");
-                *recording = true;
-                drop(cap);
-                drop(recording);
-
-                // Update tray icon to recording state.
-                let handle = tray_handle.clone();
-                let device = device_name.clone();
-                tokio_handle.spawn(async move {
-                    handle
-                        .update(|tray| {
-                            tray.recording = true;
-                            tray.status_text = format!("Recording from {device}…");
-                        })
-                        .await;
-                });
+                let device = capture
+                    .active_device_name()
+                    .unwrap_or_else(|| "microphone".into());
+                info!("Recording started from {device}");
+                self.recording.set(true);
+                self.set_recording_ui(true, format!("Recording from {device}\u{2026}"));
             }
             Err(e) => {
                 error!("Failed to start recording: {e}");
-            }
-        }
-    } else {
-        // Stop recording and transcribe.
-        let mut cap = capture.borrow_mut();
-        match cap.stop_recording() {
-            Ok(audio) => {
-                info!(
-                    "Recording stopped — {} samples captured",
-                    audio.samples.len()
-                );
-                *recording = false;
-                drop(cap);
-                drop(recording);
-
-                // Update tray to transcribing state.
-                let handle = tray_handle.clone();
-                tokio_handle.spawn(async move {
-                    handle
-                        .update(|tray| {
-                            tray.recording = false;
-                            tray.status_text = "Transcribing…".into();
-                        })
-                        .await;
-                });
-
-                // Spawn transcription on tokio.
-                let worker = worker.clone();
-                let handle = tray_handle.clone();
-                let config = AppConfig::load();
-
-                let language = match config.language.as_str() {
-                    "auto" => None,
-                    lang => Some(lang.to_string()),
-                };
-                let options = linux_whisper_whisper::engine::TranscribeOptions {
-                    language,
-                    translate: false,
-                };
-
-                // Channel to send transcription result back to GTK thread.
-                // Carries (Transcript, formatted_text) on success.
-                let (result_tx, result_rx) =
-                    std_mpsc::channel::<Result<(Transcript, String), String>>();
-
-                let llm_worker = llm_worker.clone();
-                tokio_handle.spawn(async move {
-                    let result = worker.transcribe(audio, options).await;
-                    match result {
-                        Ok(transcript) => {
-                            info!(
-                                "Transcription complete: {} segment(s)",
-                                transcript.segment_count()
-                            );
-
-                            // Format the text: LLM if enabled, otherwise basic.
-                            let formatted = if config.format.llm_enabled {
-                                let raw = transcript.full_text();
-                                match llm_worker.format_text(raw.clone()).await {
-                                    Ok(text) => {
-                                        info!("LLM formatting applied");
-                                        text
-                                    }
-                                    Err(e) => {
-                                        warn!("LLM formatting failed, falling back to basic: {e}");
-                                        transcript.formatted_text(&config.format)
-                                    }
-                                }
-                            } else {
-                                transcript.formatted_text(&config.format)
-                            };
-
-                            let _ = result_tx.send(Ok((transcript, formatted)));
-                        }
-                        Err(e) => {
-                            error!("Transcription failed: {e}");
-                            let _ = result_tx.send(Err(e.to_string()));
-                        }
-                    }
-
-                    // Reset tray back to idle.
-                    handle
-                        .update(|tray| {
-                            tray.recording = false;
-                            tray.status_text = "Ready".into();
-                        })
-                        .await;
-                });
-
-                // Poll for the transcription result on the GTK thread.
-                let config = AppConfig::load();
-                let main_window = main_window.clone();
-                glib::timeout_add_local(Duration::from_millis(100), move || {
-                    match result_rx.try_recv() {
-                        Ok(Ok((transcript, formatted_text))) => {
-                            if formatted_text.is_empty() {
-                                warn!("Transcription returned empty text");
-                            } else {
-                                // Auto-paste the formatted text.
-                                if let Err(e) =
-                                    DictationService::auto_paste(&config, &formatted_text)
-                                {
-                                    error!("Auto-paste failed: {e}");
-                                }
-
-                                // Populate the MainWindow transcript list if it exists.
-                                if let Some(ref win) = *main_window.borrow() {
-                                    win.clear_segments();
-                                    for seg in &transcript.segments {
-                                        win.add_segment_row(seg);
-                                    }
-                                    win.status_label.set_label(&format!(
-                                        "Dictation — {} segment(s), {:.1}s",
-                                        transcript.segment_count(),
-                                        transcript.duration,
-                                    ));
-                                }
-                            }
-                            glib::ControlFlow::Break
-                        }
-                        Ok(Err(e)) => {
-                            error!("Transcription error: {e}");
-                            glib::ControlFlow::Break
-                        }
-                        Err(std_mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                        Err(std_mpsc::TryRecvError::Disconnected) => {
-                            error!("Transcription channel disconnected");
-                            glib::ControlFlow::Break
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                error!("Failed to stop recording: {e}");
-                *recording = false;
+                self.notify("record", "Cannot record", &e.to_string());
             }
         }
     }
+
+    fn stop_and_transcribe(self: &Rc<Self>) {
+        let audio = {
+            let mut capture = self.capture.borrow_mut();
+            let Some(capture) = capture.as_mut() else {
+                return;
+            };
+            capture.stop_recording()
+        };
+        self.recording.set(false);
+
+        let audio = match audio {
+            Ok(audio) => audio,
+            Err(e) => {
+                error!("Failed to stop recording: {e}");
+                self.set_recording_ui(false, self.ready_text());
+                return;
+            }
+        };
+
+        let secs = audio.samples.len() as f64 / audio.sample_rate as f64;
+        info!("Recording stopped — {secs:.1}s of audio");
+        if secs < MIN_RECORDING_SECS {
+            self.set_recording_ui(false, self.ready_text());
+            return;
+        }
+        self.set_recording_ui(false, "Transcribing\u{2026}".into());
+
+        let config = AppConfig::load();
+
+        // When recording was stopped from this app's own window, typing the
+        // text would go into that window (and a space would press its focused
+        // button). The text is shown there and copied to the clipboard instead.
+        let own_window_focused = self
+            .window
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.window.is_active());
+        let insert = config.auto_paste && !own_window_focused;
+
+        let options = linux_whisper_whisper::engine::TranscribeOptions {
+            language: (config.language != "auto").then(|| config.language.clone()),
+            translate: false,
+        };
+
+        // Transcribe, format and deliver off the GTK thread; send the result back.
+        let (result_tx, result_rx) =
+            std_mpsc::channel::<Result<(Transcript, String, Delivery), String>>();
+        let worker = self.ctx.worker.clone();
+        let llm_worker = self.ctx.llm_worker.clone();
+        self.ctx.rt.spawn(async move {
+            let transcript = match worker.transcribe(audio, options).await {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = result_tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            info!(
+                "Transcription complete: {} segment(s)",
+                transcript.segment_count()
+            );
+
+            let basic = transcript.formatted_text(&config.format);
+            let text = if config.format.llm_enabled && !basic.is_empty() {
+                match llm_worker.format_text(transcript.full_text()).await {
+                    Ok(formatted) => {
+                        info!("AI formatting applied");
+                        tidy_text(&formatted)
+                    }
+                    Err(e) => {
+                        warn!("AI formatting failed, using basic formatting: {e}");
+                        basic
+                    }
+                }
+            } else {
+                basic
+            };
+
+            let delivery = if text.is_empty() {
+                Delivery::Failed("no speech".into())
+            } else {
+                let deliver_config = AppConfig {
+                    auto_paste: insert,
+                    ..config.clone()
+                };
+                let deliver_text = text.clone();
+                tokio::task::spawn_blocking(move || {
+                    DictationService::deliver(&deliver_config, &deliver_text)
+                })
+                .await
+                .unwrap_or_else(|e| Delivery::Failed(e.to_string()))
+            };
+            let _ = result_tx.send(Ok((transcript, text, delivery)));
+        });
+
+        let this = Rc::clone(self);
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            match result_rx.try_recv() {
+                Ok(result) => {
+                    this.finish_dictation(result, insert);
+                    glib::ControlFlow::Break
+                }
+                Err(std_mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    this.finish_dictation(Err("transcription stopped unexpectedly".into()), insert);
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
+    /// Show the result of a dictation. `insert` says whether the text was
+    /// meant to be inserted into the focused window.
+    fn finish_dictation(
+        &self,
+        result: Result<(Transcript, String, Delivery), String>,
+        insert: bool,
+    ) {
+        self.set_tray_status(self.ready_text());
+        let (transcript, text, delivery) = match result {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Transcription failed: {e}");
+                self.notify("dictation", "Transcription failed", &e);
+                return;
+            }
+        };
+
+        let label = format!(
+            "Dictation \u{2014} {} segment(s), {:.1}s",
+            transcript.segment_count(),
+            transcript.duration
+        );
+        if let Some(ref win) = *self.window.borrow() {
+            win.show_transcript(transcript.clone(), &label);
+        }
+        *self.last_dictation.borrow_mut() = Some((transcript, label));
+
+        match delivery {
+            Delivery::Typed(_) | Delivery::Pasted => {}
+            Delivery::ClipboardOnly(reason) => {
+                info!("Text left on the clipboard: {reason}");
+                if insert {
+                    self.notify(
+                        "dictation",
+                        "Dictated text is on the clipboard",
+                        &format!(
+                            "Press Ctrl+V to paste it. It could not be pasted automatically: {reason}."
+                        ),
+                    );
+                }
+            }
+            Delivery::Failed(reason) if text.is_empty() => {
+                info!("Nothing to deliver: {reason}");
+                self.notify(
+                    "dictation",
+                    "No speech recognised",
+                    "Nothing was heard in the recording.",
+                );
+            }
+            Delivery::Failed(reason) => {
+                error!("Could not deliver the text: {reason}");
+                self.notify("dictation", "Could not deliver the text", &reason);
+            }
+        }
+    }
+
+    // -- Feedback ------------------------------------------------------------
+
+    fn ready_text(&self) -> String {
+        match self.ctx.worker.loaded_model() {
+            Some(model) => format!("Ready \u{2014} {model} model"),
+            None => "Ready".into(),
+        }
+    }
+
+    fn set_recording_ui(&self, recording: bool, status: String) {
+        if let Some(ref win) = *self.window.borrow() {
+            win.set_recording_state(recording);
+            win.status_label.set_label(&status);
+        }
+        if let Some(ref tray) = self.tray {
+            let tray = Arc::clone(tray);
+            self.ctx.rt.spawn(async move {
+                tray.update(|t| {
+                    t.recording = recording;
+                    t.status_text = status;
+                })
+                .await;
+            });
+        }
+    }
+
+    fn set_tray_status(&self, status: String) {
+        if let Some(ref tray) = self.tray {
+            let tray = Arc::clone(tray);
+            self.ctx.rt.spawn(async move {
+                tray.update(|t| t.status_text = status).await;
+            });
+        }
+    }
+
+    /// Show a desktop notification, and a toast if the window is open.
+    fn notify(&self, id: &str, title: &str, body: &str) {
+        let notification = gio::Notification::new(title);
+        notification.set_body(Some(body));
+        self.ctx.app.send_notification(Some(id), &notification);
+        if let Some(ref win) = *self.window.borrow() {
+            if win.window.is_visible() {
+                win.show_toast(title);
+            }
+        }
+    }
+}
+
+/// Apply the theme preference to all windows.
+pub fn apply_theme(theme: Theme) {
+    let scheme = match theme {
+        Theme::System => adw::ColorScheme::Default,
+        Theme::Light => adw::ColorScheme::ForceLight,
+        Theme::Dark => adw::ColorScheme::ForceDark,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
+}
+
+/// Whether a StatusNotifier host (the desktop's tray) is running, so the tray
+/// icon is actually visible. Stock GNOME has none.
+fn tray_host_running() -> bool {
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return false;
+    };
+    bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        Some(&("org.kde.StatusNotifierWatcher",).to_variant()),
+        Some(glib::VariantTy::new("(b)").expect("valid variant type")),
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .ok()
+    .and_then(|reply| reply.get::<(bool,)>())
+    .is_some_and(|(owned,)| owned)
 }

@@ -1,19 +1,18 @@
 //! Dictation service — orchestrates the live dictation flow.
 //!
 //! The typical lifecycle is: hotkey press -> [`start_recording`] -> user speaks
-//! -> hotkey release -> [`stop_and_transcribe`] -> [`auto_paste`] or
-//! [`copy_to_clipboard`].
+//! -> hotkey press -> [`stop_and_transcribe`] -> [`deliver`].
 
 use std::sync::Arc;
 
-use tracing::{error, info};
+use tracing::info;
 
 use linux_whisper_audio::capture::{AudioCapture, CpalCapture};
 use linux_whisper_core::config::AppConfig;
 use linux_whisper_core::model::Transcript;
 use linux_whisper_platform::clipboard::create_clipboard;
 use linux_whisper_platform::display;
-use linux_whisper_platform::text_inject::create_injector;
+use linux_whisper_platform::text_inject::{deliver_text, Delivery};
 use linux_whisper_whisper::engine::TranscribeOptions;
 use linux_whisper_whisper::worker::WhisperWorker;
 
@@ -76,7 +75,7 @@ impl DictationService {
     /// transcription, and return the resulting [`Transcript`].
     ///
     /// The caller is responsible for delivering the transcript text to the user
-    /// (e.g. via [`auto_paste`] or [`copy_to_clipboard`]).
+    /// (e.g. via [`deliver`]).
     pub async fn stop_and_transcribe(&mut self) -> Result<Transcript, Box<dyn std::error::Error>> {
         if !self.recording {
             return Err("not currently recording".into());
@@ -117,47 +116,22 @@ impl DictationService {
         self.recording
     }
 
-    /// Deliver transcribed text to the user.
-    ///
-    /// If `config.auto_paste` is enabled the text is typed into the currently
-    /// focused window via the display-appropriate text injector (xdotool on
-    /// X11, wtype on Wayland).  Otherwise, the text is simply copied to the
-    /// system clipboard.
-    /// Deliver transcribed text to the user.
-    ///
-    /// Strategy:
-    /// 1. Always copy to clipboard first (so user always has the text).
-    /// 2. If auto_paste is enabled, also try to type it into the focused window.
-    pub fn auto_paste(config: &AppConfig, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// Deliver transcribed text to the user: copy it to the clipboard and, if
+    /// auto-paste is on, insert it into the focused window. Spawns helper
+    /// programs and may wait briefly, so call it off the GTK thread.
+    pub fn deliver(config: &AppConfig, text: &str) -> Delivery {
         let display_server = display::detect();
-        info!("Display server detected: {display_server}");
-
-        // Always copy to clipboard first — this guarantees the text is available.
-        if let Err(e) = Self::copy_to_clipboard_inner(&display_server, text) {
-            error!("Clipboard copy failed: {e}");
-            // Don't return — still try paste if enabled.
-        }
-
-        if config.auto_paste {
-            info!("Attempting text injection (display: {display_server})");
-            let injector = create_injector(&display_server);
-
-            if injector.is_available() {
-                match injector.inject_text(text) {
-                    Ok(()) => info!("Text injected successfully ({} chars)", text.len()),
-                    Err(e) => error!("Text injection failed: {e} (text is in clipboard)"),
-                }
-            } else {
-                info!("No text injection tool available; text is in clipboard");
-            }
-        } else {
-            info!(
-                "Auto-paste disabled; text copied to clipboard ({} chars)",
-                text.len()
-            );
-        }
-
-        Ok(())
+        let delivery = deliver_text(
+            &display_server,
+            text,
+            config.auto_paste,
+            config.paste_shortcut,
+        );
+        info!(
+            "Delivered {} chars ({display_server}): {delivery:?}",
+            text.len()
+        );
+        delivery
     }
 
     /// Copy the given text to the system clipboard using the best available

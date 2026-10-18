@@ -25,15 +25,15 @@ pub fn all_files() -> &'static [LlmModelFile] {
             name: "qwen2.5-0.5b-instruct",
             filename: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
             url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            size_bytes: 386_392_064,
-            sha256: "f0ca28e0567a83e0e9e5dda16d19d013c0f5c870b1a9a31847cf0e61b5e0fa4d",
+            size_bytes: 491_400_032,
+            sha256: "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
         },
         LlmModelFile {
             name: "tokenizer",
             filename: "tokenizer.json",
             url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json",
             size_bytes: 7_031_645,
-            sha256: "e72fde30522243110a5e74a8afd77cb9f0d1b14b55dba87cb8070cbc10bff7e4",
+            sha256: "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
         },
     ];
 

@@ -15,7 +15,7 @@ pub struct WhisperModel {
     pub filename: &'static str,
     /// Full download URL (HuggingFace).
     pub url: &'static str,
-    /// Approximate download size in bytes.
+    /// Download size in bytes.
     pub size_bytes: u64,
     /// SHA-256 hash of the model file for integrity verification.
     pub sha256: &'static str,
@@ -31,7 +31,7 @@ pub fn all_models() -> &'static [WhisperModel] {
             name: "tiny",
             filename: "ggml-tiny.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-            size_bytes: 77_704_715,
+            size_bytes: 77_691_713,
             sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
         },
         WhisperModel {
@@ -45,7 +45,7 @@ pub fn all_models() -> &'static [WhisperModel] {
             name: "base",
             filename: "ggml-base.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-            size_bytes: 147_964_211,
+            size_bytes: 147_951_465,
             sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
         },
         WhisperModel {
@@ -66,14 +66,14 @@ pub fn all_models() -> &'static [WhisperModel] {
             name: "small.en",
             filename: "ggml-small.en.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
-            size_bytes: 487_601_967,
+            size_bytes: 487_614_201,
             sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         },
         WhisperModel {
             name: "medium",
             filename: "ggml-medium.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-            size_bytes: 1_533_774_781,
+            size_bytes: 1_533_763_059,
             sha256: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
         },
         WhisperModel {
@@ -87,7 +87,7 @@ pub fn all_models() -> &'static [WhisperModel] {
             name: "large-v3",
             filename: "ggml-large-v3.bin",
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-            size_bytes: 3_094_623_691,
+            size_bytes: 3_095_033_483,
             sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
         },
     ];

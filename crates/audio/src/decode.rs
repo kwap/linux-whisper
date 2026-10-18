@@ -1,8 +1,9 @@
 use std::path::Path;
 
+use opus_decoder::OpusDecoder;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_OPUS};
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -54,7 +55,8 @@ pub struct DecodedAudio {
 
 /// Decode an audio file at `path` into raw f32 samples.
 ///
-/// Supports any format/codec enabled in symphonia (mp3, wav, ogg/vorbis, aac/m4a).
+/// Supports any format/codec enabled in symphonia (mp3, wav, flac, ogg/vorbis,
+/// aac/m4a/mp4) plus Opus, which symphonia can demux but not decode.
 pub fn decode_file(path: &Path) -> Result<DecodedAudio, DecodeError> {
     let file = std::fs::File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -84,11 +86,17 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio, DecodeError> {
     let codec_params = track.codec_params.clone();
     let track_id = track.id;
 
+    if codec_params.codec == CODEC_TYPE_OPUS {
+        return decode_opus(path, format_reader, track_id, &codec_params);
+    }
+
     let sample_rate = codec_params
         .sample_rate
         .ok_or_else(|| DecodeError::DecodeError("unknown sample rate".into()))?;
 
-    let channels = codec_params
+    // Containers do not always declare the channel count (AAC in MP4 often
+    // does not); the decoded buffers below are authoritative.
+    let mut channels = codec_params
         .channels
         .map(|ch| ch.count() as u16)
         .unwrap_or(1);
@@ -135,6 +143,7 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio, DecodeError> {
 
         let spec = *decoded.spec();
         let num_frames = decoded.capacity();
+        channels = spec.channels.count() as u16;
 
         let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
         sample_buf.copy_interleaved_ref(decoded);
@@ -159,6 +168,69 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio, DecodeError> {
         samples: all_samples,
         sample_rate,
         channels,
+        duration_secs,
+    })
+}
+
+/// Decode an Opus track packet by packet with the pure-Rust `opus-decoder`.
+fn decode_opus(
+    path: &Path,
+    mut format_reader: Box<dyn FormatReader>,
+    track_id: u32,
+    codec_params: &CodecParameters,
+) -> Result<DecodedAudio, DecodeError> {
+    // Opus always decodes at 48 kHz; resampling to 16 kHz happens later.
+    const OPUS_RATE: u32 = 48_000;
+
+    let channels = codec_params.channels.map(|ch| ch.count()).unwrap_or(1);
+    if channels > 2 {
+        return Err(DecodeError::UnsupportedFormat(format!(
+            "Opus with {channels} channels is not supported"
+        )));
+    }
+
+    let mut decoder = OpusDecoder::new(OPUS_RATE, channels)
+        .map_err(|e| DecodeError::DecodeError(format!("opus: {e}")))?;
+    let mut pcm = vec![0.0f32; OpusDecoder::MAX_FRAME_SIZE_48K * channels];
+    let mut all_samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match format_reader.next_packet() {
+            Ok(p) => p,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => return Err(DecodeError::DecodeError(e.to_string())),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        match decoder.decode_float(&packet.data, &mut pcm, false) {
+            Ok(frames) => all_samples.extend_from_slice(&pcm[..frames * channels]),
+            Err(e) => debug!("Skipping undecodable Opus packet: {e}"),
+        }
+    }
+
+    // Drop the encoder's start-up samples ("pre-skip").
+    let pre_skip = codec_params.delay.unwrap_or(0) as usize * channels;
+    all_samples.drain(..pre_skip.min(all_samples.len()));
+
+    let duration_secs = (all_samples.len() / channels) as f64 / OPUS_RATE as f64;
+    info!(
+        "Decoded {} Opus samples ({:.2}s) from {:?}",
+        all_samples.len(),
+        duration_secs,
+        path.file_name().unwrap_or_default(),
+    );
+
+    Ok(DecodedAudio {
+        samples: all_samples,
+        sample_rate: OPUS_RATE,
+        channels: channels as u16,
         duration_secs,
     })
 }
@@ -234,6 +306,24 @@ mod tests {
     fn test_wav_path() -> PathBuf {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         manifest_dir.join("test_fixtures").join("test.wav")
+    }
+
+    /// Every format the website lists must decode to about one second of
+    /// audible 16 kHz mono audio.
+    #[test]
+    fn decode_all_advertised_formats() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_fixtures");
+        for ext in ["mp3", "ogg", "m4a", "opus", "flac", "mp4"] {
+            let path = dir.join(format!("tone.{ext}"));
+            let audio = decode_to_mono_16khz(&path)
+                .unwrap_or_else(|e| panic!("{ext}: failed to decode: {e}"));
+            let secs = audio.samples.len() as f64 / 16_000.0;
+            assert!((secs - 1.0).abs() < 0.15, "{ext}: decoded {secs:.3}s");
+            let rms = (audio.samples.iter().map(|s| s * s).sum::<f32>()
+                / audio.samples.len() as f32)
+                .sqrt();
+            assert!(rms > 0.05, "{ext}: decoded audio is silent (rms {rms})");
+        }
     }
 
     #[test]

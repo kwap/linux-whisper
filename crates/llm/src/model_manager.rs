@@ -78,6 +78,11 @@ impl LlmModelManager {
         std::fs::create_dir_all(&self.models_dir)?;
 
         let dest = self.file_path(file);
+        // Download next to the final file and rename it into place only after
+        // the hash matches, so an interrupted download never looks complete.
+        let mut partial_name = dest.clone().into_os_string();
+        partial_name.push(".part");
+        let partial = PathBuf::from(partial_name);
         info!("Downloading '{}' to {}", file.name, dest.display());
 
         let client = reqwest::Client::builder()
@@ -104,7 +109,7 @@ impl LlmModelManager {
 
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut out_file = tokio::fs::File::create(&dest)
+        let mut out_file = tokio::fs::File::create(&partial)
             .await
             .map_err(LlmModelManagerError::IoError)?;
 
@@ -113,7 +118,13 @@ impl LlmModelManager {
 
         use tokio::io::AsyncWriteExt;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| LlmModelManagerError::DownloadError(e.to_string()))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&partial);
+                    return Err(LlmModelManagerError::DownloadError(e.to_string()));
+                }
+            };
             out_file
                 .write_all(&chunk)
                 .await
@@ -135,7 +146,7 @@ impl LlmModelManager {
         info!(
             "Download complete: {} bytes written to {}",
             downloaded,
-            dest.display()
+            partial.display()
         );
 
         let actual_hash = hex::encode(hasher.finalize());
@@ -144,13 +155,14 @@ impl LlmModelManager {
                 "Integrity check failed for '{}': expected {}, got {}",
                 file.name, file.sha256, actual_hash
             );
-            let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::remove_file(&partial);
             return Err(LlmModelManagerError::IntegrityError {
                 expected: file.sha256.to_string(),
                 actual: actual_hash,
             });
         }
 
+        std::fs::rename(&partial, &dest)?;
         Ok(dest)
     }
 

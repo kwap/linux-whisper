@@ -76,6 +76,13 @@ pub fn basic_format_segments(segments: &[Segment], opts: &FormatOptions) -> Stri
 }
 
 /// Simple join of segment texts (used when formatting is disabled).
+/// Tidy text that is already split into sentences and paragraphs (for
+/// example the AI formatter's output): normalise spaces, capitalise sentence
+/// starts and remove spaces before punctuation.
+pub fn tidy_text(text: &str) -> String {
+    cleanup(&capitalize_sentences(&normalize_whitespace(text)))
+}
+
 fn join_segments(segments: &[Segment]) -> String {
     segments
         .iter()
@@ -207,6 +214,14 @@ mod tests {
     }
 
     // ─────────────── Disabled / identity ───────────────
+
+    #[test]
+    fn tidy_text_capitalises_sentences_and_keeps_paragraphs() {
+        assert_eq!(
+            tidy_text("hello, how are you? i wanted to ask .\n\nis it at ten?"),
+            "Hello, how are you? I wanted to ask.\n\nIs it at ten?"
+        );
+    }
 
     #[test]
     fn disabled_returns_joined_text() {

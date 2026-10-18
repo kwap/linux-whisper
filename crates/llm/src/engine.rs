@@ -137,6 +137,10 @@ impl LlmEngine {
 
         let eos_token = tokenizer.token_to_id("<|im_end|>").unwrap_or(u32::MAX);
 
+        // `forward` takes the position of the first token it is given: 0 for
+        // the prompt (which also clears the KV cache left over from the
+        // previous call), then the running position of each generated token.
+        let mut position = 0;
         for _ in 0..max_tokens {
             let input = Tensor::new(&tokens[..], &self.device)
                 .map_err(|e| LlmError::InferenceError(format!("tensor: {e}")))?
@@ -144,8 +148,9 @@ impl LlmEngine {
                 .map_err(|e| LlmError::InferenceError(format!("unsqueeze: {e}")))?;
 
             let logits = model
-                .forward(&input, tokens.len())
+                .forward(&input, position)
                 .map_err(|e| LlmError::InferenceError(format!("forward: {e}")))?;
+            position += tokens.len();
 
             let next_token = sample_logits(&logits)
                 .map_err(|e| LlmError::InferenceError(format!("sample: {e}")))?;
@@ -165,28 +170,51 @@ impl LlmEngine {
         let trimmed = output.trim().to_string();
         debug!("LLM output: {} chars", trimmed.len());
 
+        if !is_plausible_reformat(raw_text, &trimmed) {
+            return Err(LlmError::InferenceError(
+                "output does not look like a reformatting of the input".into(),
+            ));
+        }
+
         Ok(trimmed)
     }
 }
 
-/// Sample the next token from logits using near-greedy (temperature ~ 0).
+/// The formatter must only change punctuation, capitals and layout. Reject
+/// output that is empty, much shorter or longer than the input, or that drops
+/// many of its words — the caller then falls back to the basic formatter.
+fn is_plausible_reformat(input: &str, output: &str) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(|w| w.to_lowercase())
+            .collect()
+    };
+    let in_words = words(input);
+    let out_words = words(output);
+    if in_words.is_empty() {
+        return out_words.is_empty();
+    }
+    if out_words.is_empty() {
+        return false;
+    }
+    let ratio = out_words.len() as f64 / in_words.len() as f64;
+    if !(0.8..=1.3).contains(&ratio) {
+        return false;
+    }
+    let kept = in_words.iter().filter(|w| out_words.contains(w)).count();
+    kept as f64 / in_words.len() as f64 >= 0.85
+}
+
+/// Pick the most likely next token (greedy decoding, so the same input always
+/// gives the same output).
 fn sample_logits(logits: &Tensor) -> candle_core::Result<u32> {
-    let logits = logits.squeeze(0)?;
-    let last_logits = logits.get(logits.dim(0)? - 1)?;
-
-    // Apply temperature = 0.1 for near-deterministic output.
-    let scaled = (&last_logits / 0.1f64)?;
-    let probs = candle_nn::ops::softmax_last_dim(&scaled)?;
-
-    let probs_vec: Vec<f32> = probs.to_vec1()?;
-    let next_token = probs_vec
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(idx, _)| idx as u32)
-        .unwrap_or(0);
-
-    Ok(next_token)
+    // `forward` returns the logits of the last position only: [batch, vocab].
+    logits
+        .squeeze(0)?
+        .to_dtype(candle_core::DType::F32)?
+        .argmax(0)?
+        .to_scalar::<u32>()
 }
 
 #[cfg(test)]
@@ -203,6 +231,27 @@ mod tests {
     fn engine_default_not_loaded() {
         let engine = LlmEngine::default();
         assert!(!engine.is_loaded());
+    }
+
+    #[test]
+    fn reformat_check_accepts_punctuation_changes() {
+        assert!(is_plausible_reformat(
+            "so first buy milk second call mom",
+            "So, first: buy milk.\n2. Call Mom."
+        ));
+    }
+
+    #[test]
+    fn reformat_check_rejects_rewrites() {
+        assert!(!is_plausible_reformat("send the report tomorrow", ""));
+        assert!(!is_plausible_reformat(
+            "send the report tomorrow",
+            "Sure! Here is your formatted text: I will happily send the report tomorrow morning."
+        ));
+        assert!(!is_plausible_reformat(
+            "send the report tomorrow morning please",
+            "Dispatch documents."
+        ));
     }
 
     #[test]
