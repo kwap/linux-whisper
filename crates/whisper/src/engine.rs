@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use linux_whisper_audio::capture::AudioBuffer;
+use linux_whisper_core::config::AppConfig;
 use linux_whisper_core::model::Transcript;
 use thiserror::Error;
 
@@ -40,8 +41,22 @@ pub enum TranscribeError {
 pub struct TranscribeOptions {
     /// ISO 639-1 language code (e.g. "en", "de"). `None` means auto-detect.
     pub language: Option<String>,
+    /// When auto-detecting: the languages to choose from (ISO 639-1 codes).
+    /// Empty means any language.
+    pub languages: Vec<String>,
     /// If `true`, translate non-English speech to English.
     pub translate: bool,
+}
+
+impl TranscribeOptions {
+    /// The language choice from the user's settings.
+    pub fn from_config(config: &AppConfig) -> Self {
+        Self {
+            language: (config.language != "auto").then(|| config.language.clone()),
+            languages: config.languages.clone(),
+            translate: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +105,30 @@ mod tests {
         let opts = TranscribeOptions {
             language: Some("de".to_string()),
             translate: true,
+            ..Default::default()
         };
         assert_eq!(opts.language, Some("de".to_string()));
         assert!(opts.translate);
+    }
+
+    #[test]
+    fn transcribe_options_from_config() {
+        let config = AppConfig {
+            languages: vec!["en".into(), "pl".into()],
+            ..AppConfig::default()
+        };
+        let opts = TranscribeOptions::from_config(&config);
+        assert_eq!(opts.language, None);
+        assert_eq!(opts.languages, vec!["en", "pl"]);
+
+        let fixed = AppConfig {
+            language: "de".into(),
+            ..config
+        };
+        assert_eq!(
+            TranscribeOptions::from_config(&fixed).language.as_deref(),
+            Some("de")
+        );
     }
 
     #[test]

@@ -6,6 +6,9 @@
 //!     ~/.local/share/linux-whisper/models/ggml-base.bin recording.m4a [language]
 //! ```
 //!
+//! The language is a code such as `de`, or a list such as `en,pl,de` to
+//! detect only among those languages; without it any language is detected.
+//!
 //! Set `LW_DEBUG=1` to see how the audio was split and which language each
 //! part was given.
 
@@ -25,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [model, file, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: transcribe <model.bin> <audio file> [language]");
+        eprintln!("usage: transcribe <model.bin> <audio file> [language | en,pl,de]");
         std::process::exit(2);
     };
 
@@ -33,9 +36,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.load_model(PathBuf::from(model)).await?;
 
     let audio = decode_to_mono_16khz(&PathBuf::from(file))?;
-    let options = TranscribeOptions {
-        language: rest.first().cloned(),
-        translate: false,
+    // A language code transcribes in that language; a comma-separated list
+    // auto-detects among those languages.
+    let options = match rest.first() {
+        Some(list) if list.contains(',') => TranscribeOptions {
+            languages: list.split(',').map(str::to_string).collect(),
+            ..Default::default()
+        },
+        language => TranscribeOptions {
+            language: language.cloned(),
+            ..Default::default()
+        },
     };
     let transcript = worker.transcribe(audio, options).await?;
 
@@ -49,8 +60,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|c| format!("{:.0}%", c * 100.0))
             .unwrap_or_else(|| "-".into());
         println!(
-            "[{:7.2} - {:7.2}] {confidence:>4}  {}",
-            seg.start, seg.end, seg.text
+            "[{:7.2} - {:7.2}] {confidence:>4} {:>2}  {}",
+            seg.start,
+            seg.end,
+            seg.language.as_deref().unwrap_or("-"),
+            seg.text
         );
     }
     Ok(())

@@ -16,6 +16,9 @@ pub enum AppAction {
     Quit,
     /// The hotkey setting changed: bind the new one.
     HotkeyChanged,
+    /// Stop listening for the hotkey until the next `HotkeyChanged` (while
+    /// a new one is being recorded).
+    SuspendHotkey,
     /// A whisper model finished loading.
     ModelChanged,
     /// Other settings changed (microphone, confidence display, ...).

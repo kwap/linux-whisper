@@ -215,6 +215,14 @@ impl CpalCapture {
         Ok((raw_samples, self.device_sample_rate))
     }
 
+    /// Length of the recording so far, in seconds.
+    pub fn recorded_secs(&self) -> f64 {
+        let rate = self.device_sample_rate.max(1) as f64;
+        self.buffer
+            .lock()
+            .map_or(0.0, |buf| buf.len() as f64 / rate)
+    }
+
     /// Returns the name of the default input device, if available.
     pub fn default_device_name(&self) -> Option<String> {
         self.host.default_input_device().and_then(|d| d.name().ok())

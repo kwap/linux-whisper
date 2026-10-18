@@ -172,6 +172,7 @@ jobs:
           strip "${DIR}/linux-whisper"
           cp README.md LICENSE "${DIR}/"
           cp build-aux/install.sh "${DIR}/install.sh"
+          cp build-aux/uninstall.sh "${DIR}/uninstall.sh"
           cp -r data "${DIR}/"
           tar czf "${DIR}.tar.gz" "${DIR}"
 

@@ -3,14 +3,19 @@ use linux_whisper_audio::capture::CpalCapture;
 use linux_whisper_core::config::{AppConfig, PasteShortcut, Theme};
 use linux_whisper_core::language::Language;
 use linux_whisper_llm::model_manager::LlmModelManager;
-use linux_whisper_platform::hotkey::{check_input_group_membership, parse_hotkey};
+use linux_whisper_platform::hotkey::check_input_group_membership;
 use linux_whisper_platform::text_inject::UinputPaster;
 use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
 use tracing::{error, info};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::context::{AppAction, AppContext};
 use crate::services::models::{self, ModelEvent};
+
+use super::shortcut;
 
 /// Save a setting. Every change re-reads the file first, so settings changed
 /// one after another never overwrite each other.
@@ -117,18 +122,19 @@ fn dictation_group(
     }
     group.add(&model_row);
 
-    // Language selector: auto-detect plus every language the models know.
+    // Language: detected automatically (among the languages the user
+    // speaks), or always the same one.
     let mut languages: Vec<(&str, &str)> = Language::all()
         .iter()
         .map(|l| (l.code(), l.name()))
         .collect();
     languages.sort_by_key(|(_, name)| *name);
-    languages.insert(0, ("auto", "Auto-detect"));
+    languages.insert(0, ("auto", "Automatic"));
     let lang_names: Vec<&str> = languages.iter().map(|(_, name)| *name).collect();
 
     let lang_row = adw::ComboRow::builder()
         .title("Language")
-        .subtitle("Auto-detect also follows a switch of language between sentences")
+        .subtitle("Detection follows a switch of language between sentences")
         .model(&gtk::StringList::new(&lang_names))
         .expression(gtk::PropertyExpression::new(
             gtk::StringObject::static_type(),
@@ -142,40 +148,83 @@ fn dictation_group(
         .position(|(code, _)| *code == config.language)
         .unwrap_or(0);
     lang_row.set_selected(lang_idx as u32);
-    lang_row.connect_selected_notify(move |row| {
-        if let Some((code, _)) = languages.get(row.selected() as usize) {
-            save(|c| c.language = code.to_string());
-            info!("Language preference changed to '{code}'");
-        }
-    });
     group.add(&lang_row);
 
-    // Hotkey: applied (and bound) when the user presses Enter or the ✓ button.
-    let hotkey_row = adw::EntryRow::builder()
-        .title("Global Hotkey (e.g. Super+Shift+Space, Ctrl+Alt+D, F9)")
-        .text(&config.hotkey)
-        .show_apply_button(true)
+    let spoken_row = adw::ActionRow::builder()
+        .title("Languages You Speak")
+        .subtitle(spoken_summary(&config.languages))
+        .activatable(true)
+        .visible(config.language == "auto")
         .build();
+    spoken_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     {
-        let ctx = ctx.clone();
         let prefs_window = prefs_window.clone();
-        hotkey_row.connect_apply(move |row| {
-            let hotkey = row.text().trim().to_string();
-            match parse_hotkey(&hotkey) {
-                Ok(_) => {
-                    row.remove_css_class("error");
-                    save(|c| c.hotkey = hotkey.clone());
-                    ctx.send(AppAction::HotkeyChanged);
-                    prefs_window.add_toast(adw::Toast::new(&format!("Hotkey set to {hotkey}")));
-                }
-                Err(e) => {
-                    row.add_css_class("error");
-                    prefs_window.add_toast(adw::Toast::new(&format!("Invalid hotkey: {e}")));
-                }
+        spoken_row.connect_activated(move |row| {
+            prefs_window.push_subpage(&languages_page(row));
+        });
+    }
+    group.add(&spoken_row);
+    {
+        let spoken_row = spoken_row.clone();
+        lang_row.connect_selected_notify(move |row| {
+            if let Some((code, _)) = languages.get(row.selected() as usize) {
+                save(|c| c.language = code.to_string());
+                spoken_row.set_visible(*code == "auto");
+                info!("Language preference changed to '{code}'");
             }
         });
     }
+
+    // The dictation shortcut, recorded from the keys the user presses.
+    let shortcut_label = shortcut::Keycaps::new(false);
+    let hotkey_row = adw::ActionRow::builder()
+        .title("Dictation Shortcut")
+        .subtitle(&config.hotkey)
+        .activatable(true)
+        .build();
+    show_hotkey(&hotkey_row, &shortcut_label, &config.hotkey);
+    hotkey_row.add_suffix(&shortcut_label.widget);
+    hotkey_row.add_suffix(&gtk::Image::from_icon_name("document-edit-symbolic"));
+    {
+        let ctx = ctx.clone();
+        let prefs_window = prefs_window.clone();
+        let shortcut_label = shortcut_label.clone();
+        hotkey_row.connect_activated(move |row| {
+            // The current shortcut must not start dictation (or be kept
+            // from this window) while a new one is being pressed.
+            ctx.send(AppAction::SuspendHotkey);
+            let row = row.clone();
+            let shortcut_label = shortcut_label.clone();
+            let toast_window = prefs_window.clone();
+            let ctx_closed = ctx.clone();
+            shortcut::ask_for_shortcut(
+                &prefs_window,
+                move |hotkey| {
+                    save(|c| c.hotkey = hotkey.clone());
+                    show_hotkey(&row, &shortcut_label, &hotkey);
+                    info!("Hotkey set to {hotkey}");
+                    toast_window.add_toast(adw::Toast::new(&format!("Shortcut set to {hotkey}")));
+                },
+                move || ctx_closed.send(AppAction::HotkeyChanged),
+            );
+        });
+    }
     group.add(&hotkey_row);
+
+    let keep_keys_row = adw::SwitchRow::builder()
+        .title("Keep the Shortcut From Other Apps")
+        .subtitle("So pressing it does not also type into the app you are using (a space, for Super+Shift+Space)")
+        .active(config.block_hotkey_keys)
+        .build();
+    {
+        let ctx = ctx.clone();
+        keep_keys_row.connect_active_notify(move |row| {
+            let active = row.is_active();
+            save(|c| c.block_hotkey_keys = active);
+            ctx.send(AppAction::HotkeyChanged);
+        });
+    }
+    group.add(&keep_keys_row);
 
     let auto_paste_row = adw::SwitchRow::builder()
         .title("Auto-paste to active window")
@@ -247,6 +296,127 @@ fn dictation_group(
     group.add(&device_row);
 
     group
+}
+
+/// Show `hotkey` in the shortcut row.
+fn show_hotkey(row: &adw::ActionRow, keycaps: &shortcut::Keycaps, hotkey: &str) {
+    keycaps.set(hotkey);
+    row.set_subtitle("Starts and stops dictation in any app. Click to change it");
+}
+
+/// "English, Polish, German", or a hint when no language was chosen.
+fn spoken_summary(codes: &[String]) -> String {
+    let names: Vec<&str> = codes
+        .iter()
+        .filter_map(|code| Language::from_code(code))
+        .map(|l| l.name())
+        .collect();
+    if names.is_empty() {
+        "Any language. Choose yours: detection is far more reliable, especially with an accent"
+            .to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// The languages to detect among, with a search. Changes are saved at once
+/// and shown in `summary_row`.
+fn languages_page(summary_row: &adw::ActionRow) -> adw::NavigationPage {
+    let chosen = Rc::new(RefCell::new(AppConfig::load().languages));
+
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search languages")
+        .build();
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+
+    let mut all: Vec<&Language> = Language::all().iter().collect();
+    all.sort_by_key(|l| l.name());
+    for lang in all {
+        let code = lang.code();
+        let check = gtk::CheckButton::builder()
+            .active(chosen.borrow().iter().any(|c| c == code))
+            .valign(gtk::Align::Center)
+            .build();
+        let row = adw::ActionRow::builder()
+            .title(lang.name())
+            .activatable_widget(&check)
+            .build();
+        row.add_prefix(&check);
+        let chosen = chosen.clone();
+        let summary_row = summary_row.clone();
+        check.connect_toggled(move |check| {
+            {
+                let mut chosen = chosen.borrow_mut();
+                chosen.retain(|c| c != code);
+                if check.is_active() {
+                    chosen.push(code.to_string());
+                }
+            }
+            let languages = chosen.borrow().clone();
+            summary_row.set_subtitle(&spoken_summary(&languages));
+            save(|c| c.languages = languages);
+        });
+        list.append(&row);
+    }
+    {
+        let search = search.clone();
+        list.set_filter_func(move |row| {
+            let query = search.text().to_lowercase();
+            query.is_empty()
+                || row
+                    .downcast_ref::<adw::ActionRow>()
+                    .is_some_and(|r| r.title().to_lowercase().contains(&query))
+        });
+    }
+    {
+        let list = list.clone();
+        search.connect_search_changed(move |_| list.invalidate_filter());
+    }
+
+    let intro = gtk::Label::builder()
+        .label(
+            "Linux Whisper detects which of these languages each sentence is in. \
+             Choosing yours makes that much more reliable, especially with an accent. \
+             With none chosen, any language can be detected.\n\nLanguages are recognised \
+             best with the Small model or larger.",
+        )
+        .wrap(true)
+        .xalign(0.0)
+        .css_classes(["dim-label"])
+        .build();
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_top(12)
+        .margin_bottom(24)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    content.append(&intro);
+    content.append(&search);
+    content.append(&list);
+
+    let toolbar = adw::ToolbarView::builder()
+        .content(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vexpand(true)
+                .child(&adw::Clamp::builder().child(&content).build())
+                .build(),
+        )
+        .build();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+
+    // Typing anywhere on the page searches.
+    search.set_key_capture_widget(Some(&toolbar));
+
+    adw::NavigationPage::builder()
+        .title("Languages You Speak")
+        .child(&toolbar)
+        .build()
 }
 
 // ---------------------------------------------------------------------------
@@ -505,12 +675,13 @@ fn system_group() -> adw::PreferencesGroup {
 
     let paste_ok = UinputPaster::is_permitted();
     let paste_row = adw::ActionRow::builder()
-        .title("Pasting on GNOME and KDE")
+        .title("Virtual keyboard")
         .subtitle(if paste_ok {
-            "Ready: text is pasted with a virtual keyboard"
+            "Ready: text is pasted on GNOME and KDE, and the shortcut is kept from other apps"
         } else {
             "Needs access to /dev/uinput, which the udev rule installed with \
-             Linux Whisper grants. Without it the text is only copied to the clipboard"
+             Linux Whisper grants. Without it the text is only copied to the clipboard \
+             on GNOME and KDE, and the shortcut also reaches the app you are using"
         })
         .build();
     paste_row.add_prefix(&status_icon(paste_ok));

@@ -1,6 +1,3 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <rect x="6" y="1" width="4" height="8" rx="2" fill="currentColor" />
-  <path d="M4 7 a4 4 0 0 0 8 0" fill="none" stroke="currentColor" stroke-width="1.2" />
-  <line x1="8" y1="11" x2="8" y2="14" stroke="currentColor" stroke-width="1.2" />
-  <line x1="6" y1="14" x2="10" y2="14" stroke="currentColor" stroke-width="1.2" />
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="-11.5 0 256 256">
+  <path fill="#2e3436" d="M150,55 L120,35 L155,8 Z M155,8 L190,28 L150,55 Z M120,35 L150,55 L105,68 Z M150,55 L190,28 L182,60 Z M190,28 L215,38 L192,55 Z M105,68 L150,55 L182,60 L180,98 L95,90 Z M95,90 L180,98 L115,148 Z M115,148 L50,130 L95,90 Z M115,148 L80,190 L18,185 L50,130 Z M180,98 L182,60 L185,150 Z M180,98 L185,150 L115,148 Z M130,210 L80,190 L115,148 Z M115,148 L185,150 L170,198 L130,210 Z M112,218 L88,248 L100,208 Z M142,218 L120,248 L125,210 Z"/>
 </svg>

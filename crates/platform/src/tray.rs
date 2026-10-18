@@ -176,23 +176,35 @@ pub async fn spawn_tray(
 /// pixels are converted to big-endian ARGB as required by the ksni `Icon`.
 /// Returns `None` if the SVG fails to parse (should never happen for our
 /// embedded icons).
-fn render_svg_to_icon(svg_data: &str, size: i32) -> Option<Icon> {
+/// The tray's pigeon, `size` pixels square, as premultiplied RGBA pixels:
+/// its eye glows red while recording. The window shows the same pigeon.
+pub fn pigeon_rgba(recording: bool, size: u32) -> Option<Vec<u8>> {
+    let svg = if recording { SVG_RECORDING } else { SVG_NORMAL };
+    render_svg(svg, size).map(|pixmap| pixmap.take())
+}
+
+/// Render an SVG, scaled to `size` pixels square.
+fn render_svg(svg_data: &str, size: u32) -> Option<resvg::tiny_skia::Pixmap> {
     use resvg::tiny_skia;
     use resvg::usvg;
 
     let opt = usvg::Options::default();
     let tree = usvg::Tree::from_str(svg_data, &opt).ok()?;
 
-    let s = size as u32;
-    let mut pixmap = tiny_skia::Pixmap::new(s, s)?;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
 
     // Scale the SVG viewBox to fit the target size.
     let svg_size = tree.size();
-    let sx = s as f32 / svg_size.width();
-    let sy = s as f32 / svg_size.height();
+    let sx = size as f32 / svg_size.width();
+    let sy = size as f32 / svg_size.height();
     let transform = tiny_skia::Transform::from_scale(sx, sy);
 
     resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Some(pixmap)
+}
+
+fn render_svg_to_icon(svg_data: &str, size: i32) -> Option<Icon> {
+    let pixmap = render_svg(svg_data, size as u32)?;
 
     // Convert from RGBA (tiny-skia premultiplied) to ARGB (ksni big-endian).
     let rgba = pixmap.data();

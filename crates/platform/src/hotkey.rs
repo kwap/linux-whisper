@@ -1,13 +1,20 @@
+//! Global hotkey: reads the keyboards in `/dev/input` (evdev), so it works on
+//! X11 and on every Wayland desktop, and can keep the hotkey's keys from the
+//! focused app (see [`EvdevHotkeyManager`]).
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use evdev::{Device, EventType, KeyCode};
+use evdev::uinput::VirtualDevice;
+use evdev::{
+    AttributeSet, Device, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
+};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use tracing::{debug, error, info, warn};
 
@@ -83,7 +90,9 @@ fn map_key_name(name: &str) -> Result<Vec<KeyCode>, HotkeyError> {
         }
         "shift" => return Ok(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT]),
         "ctrl" | "control" => return Ok(vec![KeyCode::KEY_LEFTCTRL, KeyCode::KEY_RIGHTCTRL]),
-        "alt" => return Ok(vec![KeyCode::KEY_LEFTALT, KeyCode::KEY_RIGHTALT]),
+        // Left Alt only: on many layouts Right Alt is AltGr, which types
+        // letters such as ś, and must not trigger (and eat) an Alt shortcut.
+        "alt" => KeyCode::KEY_LEFTALT,
         "altgr" => KeyCode::KEY_RIGHTALT,
 
         // Common keys.
@@ -182,6 +191,106 @@ fn map_key_name(name: &str) -> Result<Vec<KeyCode>, HotkeyError> {
 }
 
 // ---------------------------------------------------------------------------
+// Key names for the shortcut editor
+// ---------------------------------------------------------------------------
+
+/// The modifier part of a hotkey for an evdev key code ("Ctrl", "Shift",
+/// "Alt", "AltGr", "Super"), or `None` if the key is not a modifier.
+pub fn modifier_name(code: u16) -> Option<&'static str> {
+    match KeyCode::new(code) {
+        KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => Some("Ctrl"),
+        KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => Some("Shift"),
+        KeyCode::KEY_LEFTALT => Some("Alt"),
+        KeyCode::KEY_RIGHTALT => Some("AltGr"),
+        KeyCode::KEY_LEFTMETA | KeyCode::KEY_RIGHTMETA => Some("Super"),
+        _ => None,
+    }
+}
+
+/// The name a hotkey uses for a (non-modifier) evdev key code, e.g. "Space",
+/// "D", "F13"; `None` for keys a hotkey cannot use.
+pub fn key_name(code: u16) -> Option<String> {
+    const NAMED: [(KeyCode, &str); 33] = [
+        (KeyCode::KEY_SPACE, "Space"),
+        (KeyCode::KEY_ENTER, "Enter"),
+        (KeyCode::KEY_TAB, "Tab"),
+        (KeyCode::KEY_ESC, "Esc"),
+        (KeyCode::KEY_BACKSPACE, "Backspace"),
+        (KeyCode::KEY_INSERT, "Insert"),
+        (KeyCode::KEY_DELETE, "Delete"),
+        (KeyCode::KEY_HOME, "Home"),
+        (KeyCode::KEY_END, "End"),
+        (KeyCode::KEY_PAGEUP, "PageUp"),
+        (KeyCode::KEY_PAGEDOWN, "PageDown"),
+        (KeyCode::KEY_UP, "Up"),
+        (KeyCode::KEY_DOWN, "Down"),
+        (KeyCode::KEY_LEFT, "Left"),
+        (KeyCode::KEY_RIGHT, "Right"),
+        (KeyCode::KEY_PAUSE, "Pause"),
+        (KeyCode::KEY_SCROLLLOCK, "ScrollLock"),
+        (KeyCode::KEY_SYSRQ, "PrintScreen"),
+        (KeyCode::KEY_COMPOSE, "Menu"),
+        (KeyCode::KEY_GRAVE, "Grave"),
+        (KeyCode::KEY_MINUS, "Minus"),
+        (KeyCode::KEY_EQUAL, "Equal"),
+        (KeyCode::KEY_COMMA, "Comma"),
+        (KeyCode::KEY_DOT, "Period"),
+        (KeyCode::KEY_SLASH, "Slash"),
+        (KeyCode::KEY_BACKSLASH, "Backslash"),
+        (KeyCode::KEY_SEMICOLON, "Semicolon"),
+        (KeyCode::KEY_APOSTROPHE, "Apostrophe"),
+        (KeyCode::KEY_LEFTBRACE, "BracketLeft"),
+        (KeyCode::KEY_RIGHTBRACE, "BracketRight"),
+        (KeyCode::KEY_0, "0"),
+        (KeyCode::KEY_F11, "F11"),
+        (KeyCode::KEY_F12, "F12"),
+    ];
+    let key = KeyCode::new(code);
+    if let Some((_, name)) = NAMED.iter().find(|(k, _)| *k == key) {
+        return Some(name.to_string());
+    }
+    // Letters, digits and function keys: whatever name maps back to this key.
+    let candidates = ('A'..='Z')
+        .map(String::from)
+        .chain(('1'..='9').map(String::from))
+        .chain((1..=24).map(|n| format!("F{n}")));
+    candidates
+        .into_iter()
+        .find(|name| map_key_name(name).is_ok_and(|keys| keys == [key]))
+}
+
+/// Whether a hotkey without Ctrl, Alt or Super would take a key away from
+/// typing: a plain key (or Shift or AltGr + key) that types a character or
+/// edits text. Function keys and keys like Pause or Insert are fine on their
+/// own.
+pub fn hotkey_blocks_typing(hotkey: &str) -> bool {
+    let parts: Vec<String> = hotkey.split('+').map(|p| p.trim().to_lowercase()).collect();
+    let has_modifier = parts.iter().any(|p| {
+        matches!(
+            p.as_str(),
+            "ctrl" | "control" | "alt" | "super" | "meta" | "logo" | "win"
+        )
+    });
+    let Some(key) = parts.last() else {
+        return false;
+    };
+    let standalone = (key.starts_with('f') && key.len() > 1 && key[1..].parse::<u8>().is_ok())
+        || matches!(
+            key.as_str(),
+            "insert"
+                | "ins"
+                | "pause"
+                | "break"
+                | "scrolllock"
+                | "printscreen"
+                | "print"
+                | "sysrq"
+                | "menu"
+        );
+    !has_modifier && !standalone
+}
+
+// ---------------------------------------------------------------------------
 // EvdevHotkeyManager
 // ---------------------------------------------------------------------------
 
@@ -189,11 +298,24 @@ fn map_key_name(name: &str) -> Result<Vec<KeyCode>, HotkeyError> {
 ///
 /// Requires the current user to be in the `input` group (or have read access
 /// to `/dev/input/event*` devices).
+///
+/// Reading the keyboards alone would leave the hotkey's keys to the focused
+/// app as well: Super+Shift+Space would also type a space. So, with
+/// [`keep_keys_from_apps`](Self::keep_keys_from_apps) on and `/dev/uinput`
+/// writable, each keyboard is grabbed and its events are passed on through a
+/// virtual copy of it, all except the key press that triggers the hotkey.
+/// This is what keyd and xremap do, and it works on X11 and every Wayland
+/// desktop.
 pub struct EvdevHotkeyManager {
     event_sender: Option<tokio::sync::mpsc::Sender<HotkeyEvent>>,
     shutdown: Option<Arc<AtomicBool>>,
     thread: Option<thread::JoinHandle<()>>,
     bound: bool,
+    keep_keys: bool,
+    /// Set by the listener while at least one keyboard is grabbed.
+    keeping_keys: Arc<AtomicBool>,
+    /// Only use the keyboard with this name (tests).
+    only: Option<String>,
 }
 
 impl Default for EvdevHotkeyManager {
@@ -209,7 +331,21 @@ impl EvdevHotkeyManager {
             shutdown: None,
             thread: None,
             bound: false,
+            keep_keys: false,
+            keeping_keys: Arc::new(AtomicBool::new(false)),
+            only: None,
         }
+    }
+
+    /// Keep the key that triggers the hotkey from the focused app. Takes
+    /// effect on the next [`bind`](HotkeyManager::bind).
+    pub fn keep_keys_from_apps(&mut self, keep: bool) {
+        self.keep_keys = keep;
+    }
+
+    /// Whether the hotkey's keys are being kept from other apps right now.
+    pub fn is_keeping_keys(&self) -> bool {
+        self.keeping_keys.load(Ordering::Relaxed)
     }
 }
 
@@ -219,16 +355,13 @@ impl HotkeyManager for EvdevHotkeyManager {
             HotkeyError::BindError("event sender not set — call set_event_sender() first".into())
         })?;
 
-        let target_keys = parse_hotkey(hotkey)?;
-        info!(
-            "Binding hotkey \"{hotkey}\" → {} evdev key(s)",
-            target_keys.len()
-        );
+        let combo = Combo::parse(hotkey)?;
+        info!("Binding hotkey \"{hotkey}\"");
 
         // Open all keyboard devices.
         let mut seen = HashSet::new();
-        let keyboards = open_new_keyboards(&mut seen)?;
-        if keyboards.is_empty() {
+        let devices = open_new_keyboards(&mut seen, self.only.as_deref())?;
+        if devices.is_empty() {
             return Err(HotkeyError::PermissionDenied(
                 if check_input_group_membership() {
                     "cannot open the keyboards in /dev/input. You are in the input group, \
@@ -240,24 +373,38 @@ impl HotkeyManager for EvdevHotkeyManager {
                 .into(),
             ));
         }
-        info!("Monitoring {} keyboard device(s)", keyboards.len());
+        info!("Monitoring {} keyboard device(s)", devices.len());
+
+        let keep_keys = self.keep_keys && uinput_writable();
+        if self.keep_keys && !keep_keys {
+            warn!(
+                "Cannot write to /dev/uinput, so the hotkey's keys also reach the focused app. \
+                 The udev rule installed with Linux Whisper grants access"
+            );
+        }
+        let keyboards: Vec<Keyboard> = devices
+            .into_iter()
+            .map(|(path, device)| Keyboard::new(path, device, keep_keys, &combo))
+            .collect();
 
         let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = shutdown.clone();
-
-        // The target_keys list contains L/R variants for modifiers.
-        // The combo is: for each part of the hotkey, at least one of its
-        // variant keys must be held.
-        //
-        // We build "groups" — each original hotkey part maps to a set of
-        // acceptable keys (e.g., Super → {LEFTMETA, RIGHTMETA}).
-        let groups = build_key_groups(hotkey)?;
+        let listener = Listener {
+            keyboards,
+            seen,
+            combo,
+            keep_keys,
+            sender,
+            shutdown: shutdown.clone(),
+            keeping_keys: self.keeping_keys.clone(),
+            only: self.only.clone(),
+            held: HashSet::new(),
+            swallowed: HashSet::new(),
+            fired: false,
+        };
 
         let handle = thread::Builder::new()
             .name("evdev-hotkey".into())
-            .spawn(move || {
-                hotkey_listener_loop(keyboards, seen, groups, sender, shutdown_clone);
-            })
+            .spawn(move || listener.run())
             .map_err(|e| HotkeyError::BindError(format!("failed to spawn listener thread: {e}")))?;
 
         self.shutdown = Some(shutdown);
@@ -274,6 +421,7 @@ impl HotkeyManager for EvdevHotkeyManager {
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
+        self.keeping_keys.store(false, Ordering::Relaxed);
         self.bound = false;
         Ok(())
     }
@@ -294,227 +442,505 @@ impl Drop for EvdevHotkeyManager {
 }
 
 // ---------------------------------------------------------------------------
-// Key groups
+// Combo
 // ---------------------------------------------------------------------------
 
-/// A group represents one "part" of the hotkey combo (e.g., the "Shift" part).
-/// Any of the keys in the group being held satisfies that part.
-struct KeyGroup {
-    keys: Vec<KeyCode>,
+/// The modifier keys. A hotkey fires only with exactly its own modifiers
+/// held, so Ctrl+Space does not also fire (and hide) Ctrl+Shift+Space.
+const MODIFIERS: [KeyCode; 8] = [
+    KeyCode::KEY_LEFTCTRL,
+    KeyCode::KEY_RIGHTCTRL,
+    KeyCode::KEY_LEFTSHIFT,
+    KeyCode::KEY_RIGHTSHIFT,
+    KeyCode::KEY_LEFTALT,
+    KeyCode::KEY_RIGHTALT,
+    KeyCode::KEY_LEFTMETA,
+    KeyCode::KEY_RIGHTMETA,
+];
+
+/// A parsed hotkey: pressing the last part while the others are held fires
+/// it. Each part is a group of keys, any of which will do (left or right
+/// Shift, for example).
+#[derive(Debug, Clone)]
+struct Combo {
+    held: Vec<Vec<KeyCode>>,
+    trigger: Vec<KeyCode>,
 }
 
-fn build_key_groups(hotkey: &str) -> Result<Vec<KeyGroup>, HotkeyError> {
-    let parts: Vec<&str> = hotkey.split('+').map(str::trim).collect();
-    let mut groups = Vec::new();
-    for part in parts {
-        let keys = map_key_name(part)?;
-        groups.push(KeyGroup { keys });
+impl Combo {
+    fn parse(hotkey: &str) -> Result<Self, HotkeyError> {
+        let mut parts = hotkey
+            .split('+')
+            .map(|part| map_key_name(part.trim()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let trigger = parts
+            .pop()
+            .ok_or_else(|| HotkeyError::BindError("empty hotkey string".into()))?;
+        Ok(Self {
+            held: parts,
+            trigger,
+        })
     }
-    Ok(groups)
+
+    /// Whether pressing `key` while `held` are down fires the hotkey.
+    fn fires(&self, key: KeyCode, held: &HashSet<KeyCode>) -> bool {
+        let in_combo = |k: &KeyCode| self.held.iter().any(|group| group.contains(k));
+        self.trigger.contains(&key)
+            && self
+                .held
+                .iter()
+                .all(|group| group.iter().any(|k| held.contains(k)))
+            && held
+                .iter()
+                .all(|k| !MODIFIERS.contains(k) || in_combo(k) || self.trigger.contains(k))
+    }
+
+    /// Whether the trigger can be kept from other apps. A modifier cannot:
+    /// the desktop would never see it released.
+    fn trigger_can_be_kept(&self) -> bool {
+        !self.trigger.iter().any(|k| MODIFIERS.contains(k))
+    }
 }
 
-/// Check if all groups are satisfied by the currently held keys.
-fn combo_active(groups: &[KeyGroup], held: &HashSet<KeyCode>) -> bool {
-    groups
-        .iter()
-        .all(|g| g.keys.iter().any(|k| held.contains(k)))
+// ---------------------------------------------------------------------------
+// Keyboards
+// ---------------------------------------------------------------------------
+
+/// Part of the names of the virtual keyboards this app creates. Devices with
+/// it are never read: they only repeat what the app itself sends.
+const VIRTUAL_DEVICE_TAG: &str = "Linux Whisper";
+
+/// A key the desktop sees but no app does (it types nothing). Tapped after
+/// a kept hotkey, so the desktop does not take Super+(kept key) for a lone
+/// Super press, which opens the application menu on KDE and GNOME.
+const NO_OP_KEY: KeyCode = KeyCode::KEY_UNKNOWN;
+
+/// How long the desktop gets to pick up a virtual keyboard before keys are
+/// sent through it; keys sent earlier would be lost.
+const MIRROR_SETTLE: Duration = Duration::from_millis(400);
+
+struct Keyboard {
+    path: PathBuf,
+    name: String,
+    // Declared before `mirror`, so on drop the keyboard is released before its
+    // copy disappears.
+    device: Device,
+    /// The virtual copy that the desktop reads while `device` is grabbed.
+    mirror: Option<VirtualDevice>,
+    /// When the keyboard can be grabbed (its copy has been picked up by then).
+    grab_at: Option<Instant>,
+    /// Events of the current report, passed on together at its end.
+    frame: Vec<InputEvent>,
+    /// Tap `NO_OP_KEY` at the end of the current report.
+    tap_no_op: bool,
+}
+
+impl Keyboard {
+    fn new(path: PathBuf, device: Device, keep_keys: bool, combo: &Combo) -> Self {
+        let name = device.name().unwrap_or("keyboard").to_string();
+        if let Err(e) = device.set_nonblocking(true) {
+            warn!("Failed to set {name} non-blocking: {e}");
+        }
+        let mut keyboard = Self {
+            path,
+            name,
+            device,
+            mirror: None,
+            grab_at: None,
+            frame: Vec::new(),
+            tap_no_op: false,
+        };
+        if keep_keys {
+            keyboard.start_keeping(combo);
+        }
+        keyboard
+    }
+
+    /// Create the keyboard's copy; the keyboard is grabbed once the desktop
+    /// has picked the copy up.
+    fn start_keeping(&mut self, combo: &Combo) {
+        if !combo.trigger_can_be_kept() || !can_keep_keys(&self.device, combo) {
+            return;
+        }
+        match mirror_of(&self.device, &self.name) {
+            Ok(mirror) => {
+                self.mirror = Some(mirror);
+                self.grab_at = Some(Instant::now() + MIRROR_SETTLE);
+            }
+            Err(e) => warn!("Cannot create a virtual copy of {}: {e}", self.name),
+        }
+    }
+
+    fn is_grabbed(&self) -> bool {
+        self.device.is_grabbed()
+    }
+
+    /// Grab the keyboard once its copy is ready and no key is down: the
+    /// desktop saw those presses from this keyboard and must see their
+    /// releases from it too, or the keys would stay pressed.
+    fn grab_when_ready(&mut self) {
+        let Some(at) = self.grab_at else {
+            return;
+        };
+        if Instant::now() < at || self.is_grabbed() || keys_down(&self.device) {
+            return;
+        }
+        if let Err(e) = self.device.grab() {
+            warn!("Cannot grab {} ({e}); its keys are only read", self.name);
+            self.give_up_keeping();
+            return;
+        }
+        // A key pressed just before the grab took effect: back off and retry.
+        if keys_down(&self.device) {
+            let _ = self.device.ungrab();
+            return;
+        }
+        self.grab_at = None;
+        info!(
+            "Keeping the hotkey from other apps on {} ({})",
+            self.name,
+            self.path.display()
+        );
+    }
+
+    /// Stop grabbing: the keyboard goes back to being read by everyone.
+    fn give_up_keeping(&mut self) {
+        if self.is_grabbed() {
+            let _ = self.device.ungrab();
+        }
+        self.mirror = None;
+        self.grab_at = None;
+        self.frame.clear();
+    }
+
+    /// Pass the current report on through the copy. A report left with only
+    /// its scan code (its key was kept) is dropped.
+    fn pass_on_frame(&mut self) {
+        let frame = std::mem::take(&mut self.frame);
+        let tap = std::mem::take(&mut self.tap_no_op);
+        let Some(mirror) = self.mirror.as_mut() else {
+            return;
+        };
+        let mut result = Ok(());
+        if frame.iter().any(|e| e.event_type() != EventType::MISC) {
+            result = mirror.emit(&frame);
+        }
+        if tap && result.is_ok() {
+            result = mirror
+                .emit(&[InputEvent::new(EventType::KEY.0, NO_OP_KEY.code(), 1)])
+                .and_then(|()| {
+                    mirror.emit(&[InputEvent::new(EventType::KEY.0, NO_OP_KEY.code(), 0)])
+                });
+        }
+        if let Err(e) = result {
+            // Never leave a keyboard grabbed that nobody else can read.
+            error!("Cannot pass keys on from {}: {e}", self.name);
+            self.give_up_keeping();
+        }
+    }
+}
+
+/// Whether any key of `device` is down (or its state cannot be read).
+fn keys_down(device: &Device) -> bool {
+    device
+        .get_key_state()
+        .map_or(true, |keys| keys.iter().next().is_some())
+}
+
+/// Whether `device` is a keyboard that can be grabbed to keep the hotkey from
+/// other apps: it has the trigger key and letters, and no pointer (keyboards
+/// whose USB receiver also serves a mouse are only read).
+fn can_keep_keys(device: &Device, combo: &Combo) -> bool {
+    let Some(keys) = device.supported_keys() else {
+        return false;
+    };
+    let pointer = keys.contains(KeyCode::BTN_LEFT)
+        || keys.contains(KeyCode::BTN_TOUCH)
+        || device.supported_absolute_axes().is_some()
+        || device
+            .supported_relative_axes()
+            .is_some_and(|axes| axes.contains(RelativeAxisCode::REL_X));
+    combo.trigger.iter().any(|&k| keys.contains(k))
+        && keys.contains(KeyCode::KEY_A)
+        && keys.contains(KeyCode::KEY_Z)
+        && !pointer
+}
+
+/// The name of the virtual copy of keyboard `name`: the name with the tag
+/// added, shortened to what uinput accepts (78 bytes) without losing the tag.
+fn mirror_name(name: &str) -> String {
+    let tag = format!(" ({VIRTUAL_DEVICE_TAG})");
+    let mut base = name.to_string();
+    while base.len() + tag.len() > 78 {
+        base.pop();
+    }
+    base + &tag
+}
+
+/// A virtual keyboard with the same keys and identity as `device`.
+fn mirror_of(device: &Device, name: &str) -> std::io::Result<VirtualDevice> {
+    let mut keys = AttributeSet::<KeyCode>::new();
+    for key in device.supported_keys().into_iter().flatten() {
+        keys.insert(key);
+    }
+    keys.insert(NO_OP_KEY);
+    let mirror_name = mirror_name(name);
+    let mut builder = VirtualDevice::builder()?
+        .name(&mirror_name)
+        .input_id(device.input_id())
+        .with_keys(&keys)?;
+    if let Some(axes) = device.supported_relative_axes() {
+        builder = builder.with_relative_axes(axes)?;
+    }
+    if let Some(misc) = device.misc_properties() {
+        builder = builder.with_msc(misc)?;
+    }
+    builder.build()
+}
+
+fn uinput_writable() -> bool {
+    fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/uinput")
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------
 // Listener thread
 // ---------------------------------------------------------------------------
 
-const MAX_RECONNECT_ATTEMPTS: u32 = 10;
-
 /// How often to look for keyboards connected after the hotkey was bound
-/// (e.g. a Bluetooth keyboard that connects after login).
+/// (e.g. a Bluetooth keyboard that connects after login, or one that
+/// reconnects after sleep).
 const HOTPLUG_SCAN_INTERVAL: Duration = Duration::from_secs(3);
 
-/// Calculate exponential backoff: 1, 2, 4, 8, 16, 30, 30, ...
-fn reconnect_backoff_secs(attempt: u32) -> u64 {
-    let shift = attempt.saturating_sub(1).min(5);
-    std::cmp::min(1u64 << shift, 30)
-}
-
-fn set_devices_nonblocking(keyboards: &[Device]) {
-    for dev in keyboards {
-        if let Err(e) = dev.set_nonblocking(true) {
-            warn!("Failed to set device non-blocking: {e}");
-        }
-    }
-}
-
-/// Check if any polled file descriptors report error/hangup/invalid status,
-/// which indicates stale devices (typically after sleep/wake).
-fn has_stale_revents(pollfds: &[PollFd]) -> bool {
-    pollfds.iter().any(|pfd| {
-        pfd.revents().is_some_and(|r| {
-            r.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
-        })
-    })
-}
-
-/// Try to reopen keyboard devices. Returns `None` if shutdown was requested
-/// or no devices could be opened.
-fn try_reopen_devices(
-    shutdown: &Arc<AtomicBool>,
-    seen: &mut HashSet<PathBuf>,
-) -> Option<Vec<Device>> {
-    if shutdown.load(Ordering::Relaxed) {
-        return None;
-    }
-    seen.clear();
-    match open_new_keyboards(seen) {
-        Ok(devices) if !devices.is_empty() => {
-            set_devices_nonblocking(&devices);
-            Some(devices)
-        }
-        Ok(_) => {
-            warn!("No keyboard devices found during reconnection");
-            None
-        }
-        Err(e) => {
-            warn!("Failed to reopen keyboard devices: {e}");
-            None
-        }
-    }
-}
-
-fn hotkey_listener_loop(
-    mut keyboards: Vec<Device>,
-    mut seen: HashSet<PathBuf>,
-    groups: Vec<KeyGroup>,
+struct Listener {
+    keyboards: Vec<Keyboard>,
+    /// Device paths already looked at.
+    seen: HashSet<PathBuf>,
+    combo: Combo,
+    keep_keys: bool,
     sender: tokio::sync::mpsc::Sender<HotkeyEvent>,
     shutdown: Arc<AtomicBool>,
-) {
-    use std::os::fd::AsFd;
+    keeping_keys: Arc<AtomicBool>,
+    only: Option<String>,
+    /// Keys held down, on any keyboard.
+    held: HashSet<KeyCode>,
+    /// Trigger keys kept from other apps until they are released.
+    swallowed: HashSet<KeyCode>,
+    /// The hotkey fired and its trigger is still down.
+    fired: bool,
+}
 
-    let mut held_keys: HashSet<KeyCode> = HashSet::new();
-    let mut combo_was_active = false;
-    let mut consecutive_errors: u32 = 0;
-    let mut last_scan = Instant::now();
+impl Listener {
+    fn run(mut self) {
+        use std::os::fd::AsFd;
 
-    set_devices_nonblocking(&keyboards);
-
-    loop {
-        if shutdown.load(Ordering::Relaxed) {
-            debug!("Hotkey listener shutting down");
-            return;
-        }
-
-        if last_scan.elapsed() >= HOTPLUG_SCAN_INTERVAL {
-            last_scan = Instant::now();
-            if let Ok(new_devices) = open_new_keyboards(&mut seen) {
-                if !new_devices.is_empty() {
-                    info!(
-                        "Monitoring {} newly connected keyboard(s)",
-                        new_devices.len()
-                    );
-                    set_devices_nonblocking(&new_devices);
-                    keyboards.extend(new_devices);
-                }
-            }
-        }
-
-        // Poll all device fds with a 200ms timeout.
-        // We collect ready indices separately so the borrow on keyboards is released
-        // before we call fetch_events().
-        let mut needs_reconnect = false;
-        let ready_indices: Vec<usize> = {
-            let mut pollfds: Vec<PollFd> = keyboards
-                .iter()
-                .map(|d| PollFd::new(d.as_fd(), PollFlags::POLLIN))
-                .collect();
-
-            let timeout = PollTimeout::try_from(200).unwrap();
-            match poll(&mut pollfds, timeout) {
-                Ok(0) => {
-                    consecutive_errors = 0;
-                    continue;
-                }
-                Err(nix::errno::Errno::EINTR) => continue,
-                Err(e) => {
-                    warn!("poll() error: {e}");
-                    needs_reconnect = true;
-                    vec![]
-                }
-                Ok(_) if has_stale_revents(&pollfds) => {
-                    warn!("Stale device descriptors detected (sleep/wake?)");
-                    needs_reconnect = true;
-                    vec![]
-                }
-                Ok(_) => pollfds
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, pfd)| pfd.revents().is_some_and(|r| r.contains(PollFlags::POLLIN)))
-                    .map(|(i, _)| i)
-                    .collect(),
-            }
-        };
-
-        if needs_reconnect {
-            consecutive_errors += 1;
-            if consecutive_errors > MAX_RECONNECT_ATTEMPTS {
-                error!(
-                    "Exceeded {} reconnect attempts, hotkey listener stopping",
-                    MAX_RECONNECT_ATTEMPTS
-                );
+        let mut last_scan = Instant::now();
+        let mut paused = false;
+        loop {
+            if self.shutdown.load(Ordering::Relaxed) {
+                debug!("Hotkey listener shutting down");
+                // Dropping the keyboards releases them and removes their copies.
                 return;
             }
 
-            let backoff = reconnect_backoff_secs(consecutive_errors);
-            info!(
-                "Reconnecting devices (attempt {}/{}, backoff {}s)",
-                consecutive_errors, MAX_RECONNECT_ATTEMPTS, backoff
-            );
-            thread::sleep(std::time::Duration::from_secs(backoff));
-
-            if let Some(new_devices) = try_reopen_devices(&shutdown, &mut seen) {
-                info!("Reconnected to {} keyboard device(s)", new_devices.len());
-                keyboards = new_devices;
-                held_keys.clear();
-                combo_was_active = false;
-                consecutive_errors = 0;
-            }
-            continue;
-        }
-
-        // Successful poll — reset error counter.
-        consecutive_errors = 0;
-
-        // Read events from all ready devices.
-        for i in ready_indices {
-            if let Ok(events) = keyboards[i].fetch_events() {
-                for ev in events {
-                    if ev.event_type() == EventType::KEY {
-                        let key = KeyCode::new(ev.code());
-                        match ev.value() {
-                            1 => {
-                                held_keys.insert(key);
-                            }
-                            0 => {
-                                held_keys.remove(&key);
-                            }
-                            2 => {} // Repeat — ignore.
-                            _ => {}
+            // The process is about to stop (see `release_keyboards_on_stop`).
+            match PAUSE.load(Ordering::SeqCst) {
+                PAUSE_REQUESTED if !paused => {
+                    for keyboard in &mut self.keyboards {
+                        keyboard.give_up_keeping();
+                    }
+                    paused = true;
+                    PAUSE.store(PAUSED, Ordering::SeqCst);
+                }
+                RUNNING if paused => {
+                    paused = false;
+                    if self.keep_keys {
+                        for keyboard in &mut self.keyboards {
+                            keyboard.start_keeping(&self.combo);
                         }
                     }
                 }
+                _ => {}
+            }
+
+            if last_scan.elapsed() >= HOTPLUG_SCAN_INTERVAL {
+                last_scan = Instant::now();
+                self.add_new_keyboards();
+            }
+
+            for keyboard in &mut self.keyboards {
+                keyboard.grab_when_ready();
+            }
+            self.keeping_keys.store(
+                self.keyboards.iter().any(Keyboard::is_grabbed),
+                Ordering::Relaxed,
+            );
+
+            // Wait for input, waking up regularly for the checks above.
+            let ready: Vec<usize> = {
+                let mut pollfds: Vec<PollFd> = self
+                    .keyboards
+                    .iter()
+                    .map(|k| PollFd::new(k.device.as_fd(), PollFlags::POLLIN))
+                    .collect();
+                match poll(&mut pollfds, PollTimeout::from(100u8)) {
+                    Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                    Err(e) => {
+                        warn!("poll() error: {e}");
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Ok(_) => pollfds
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pfd)| pfd.revents().is_some_and(|r| !r.is_empty()))
+                        .map(|(i, _)| i)
+                        .collect(),
+                }
+            };
+
+            let mut gone = Vec::new();
+            for i in ready {
+                if let Err(e) = self.read_keyboard(i) {
+                    if e.kind() != std::io::ErrorKind::WouldBlock {
+                        info!("Keyboard {} is gone ({e})", self.keyboards[i].name);
+                        gone.push(i);
+                    }
+                }
+            }
+            // Unplugged (or asleep): forget it; the scan picks it up again.
+            for i in gone.into_iter().rev() {
+                let keyboard = self.keyboards.remove(i);
+                self.seen.remove(&keyboard.path);
+                self.held.clear();
+                self.swallowed.clear();
+                self.fired = false;
             }
         }
-
-        let combo_active_now = combo_active(&groups, &held_keys);
-
-        if combo_active_now && !combo_was_active {
-            debug!("Hotkey combo pressed");
-            let _ = sender.try_send(HotkeyEvent::Pressed);
-        } else if !combo_active_now && combo_was_active {
-            debug!("Hotkey combo released");
-            let _ = sender.try_send(HotkeyEvent::Released);
-        }
-
-        combo_was_active = combo_active_now;
     }
+
+    fn add_new_keyboards(&mut self) {
+        // Devices that are gone can come back under the same path.
+        self.seen.retain(|path| path.exists());
+        match open_new_keyboards(&mut self.seen, self.only.as_deref()) {
+            Ok(devices) if !devices.is_empty() => {
+                info!("Monitoring {} newly connected keyboard(s)", devices.len());
+                for (path, device) in devices {
+                    let keyboard = Keyboard::new(path, device, self.keep_keys, &self.combo);
+                    self.keyboards.push(keyboard);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => debug!("Keyboard scan failed: {e}"),
+        }
+    }
+
+    /// Handle the events waiting on keyboard `i`: watch for the hotkey and,
+    /// if the keyboard is grabbed, pass every other event on.
+    fn read_keyboard(&mut self, i: usize) -> std::io::Result<()> {
+        let keyboard = &mut self.keyboards[i];
+        let grabbed = keyboard.is_grabbed();
+        let events: Vec<InputEvent> = keyboard.device.fetch_events()?.collect();
+        for event in events {
+            let keep = match event.event_type() {
+                EventType::KEY => {
+                    let key = KeyCode::new(event.code());
+                    match event.value() {
+                        1 => {
+                            let fires = self.combo.fires(key, &self.held);
+                            self.held.insert(key);
+                            if fires {
+                                debug!("Hotkey pressed on {}", keyboard.name);
+                                self.fired = true;
+                                let _ = self.sender.try_send(HotkeyEvent::Pressed);
+                            }
+                            let keep = fires && grabbed && self.combo.trigger_can_be_kept();
+                            if keep {
+                                self.swallowed.insert(key);
+                                keyboard.tap_no_op = !self.combo.held.is_empty();
+                            }
+                            keep
+                        }
+                        0 => {
+                            self.held.remove(&key);
+                            if self.fired && self.combo.trigger.contains(&key) {
+                                self.fired = false;
+                                let _ = self.sender.try_send(HotkeyEvent::Released);
+                            }
+                            self.swallowed.remove(&key)
+                        }
+                        // Auto-repeat.
+                        _ => self.swallowed.contains(&key),
+                    }
+                }
+                _ => false,
+            };
+
+            if !grabbed {
+                continue;
+            }
+            match event.event_type() {
+                EventType::SYNCHRONIZATION if event.code() == SynchronizationCode::SYN_REPORT.0 => {
+                    keyboard.pass_on_frame();
+                }
+                // SYN_DROPPED: the event reader already put in what was lost.
+                EventType::SYNCHRONIZATION => {}
+                _ if !keep => keyboard.frame.push(event),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stopping the process
+// ---------------------------------------------------------------------------
+
+/// Whether the process is about to stop: the listener lets go of the
+/// keyboards (PAUSE_REQUESTED → PAUSED) and takes them again after.
+static PAUSE: AtomicU8 = AtomicU8::new(RUNNING);
+const RUNNING: u8 = 0;
+const PAUSE_REQUESTED: u8 = 1;
+const PAUSED: u8 = 2;
+
+/// Make Ctrl+Z safe in the terminal Linux Whisper was started from. A stopped
+/// process cannot pass keys on, so stopped while holding the keyboards it
+/// would leave them dead, and `fg` could not even be typed. On SIGTSTP the
+/// keyboards are let go first, then the process stops itself; when it
+/// continues they are taken again. (A debugger stops it without warning:
+/// turn keeping the shortcut from other apps off while debugging.)
+pub fn release_keyboards_on_stop(rt: &tokio::runtime::Handle) {
+    use nix::sys::signal::{raise, Signal};
+    use tokio::signal::unix::{signal, SignalKind};
+
+    rt.spawn(async move {
+        let mut stops = match signal(SignalKind::from_raw(Signal::SIGTSTP as i32)) {
+            Ok(stops) => stops,
+            Err(e) => {
+                warn!("Cannot watch for Ctrl+Z: {e}");
+                return;
+            }
+        };
+        while stops.recv().await.is_some() {
+            PAUSE.store(PAUSE_REQUESTED, Ordering::SeqCst);
+            // The listener checks at least every 100 ms; none may be running.
+            for _ in 0..50 {
+                if PAUSE.load(Ordering::SeqCst) == PAUSED {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            info!("Stopping (Ctrl+Z); the keyboards are released until the process continues");
+            if let Err(e) = raise(Signal::SIGSTOP) {
+                warn!("Cannot stop: {e}");
+            }
+            // Continued.
+            PAUSE.store(RUNNING, Ordering::SeqCst);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -524,7 +950,12 @@ fn hotkey_listener_loop(
 /// Open the `/dev/input/event*` devices not yet in `seen` that support
 /// keyboard keys. Every device that could be opened is added to `seen`, so
 /// later calls only look at devices connected (or made accessible) since.
-fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, HotkeyError> {
+/// This app's own virtual keyboards are skipped, and with `only`, all but the
+/// keyboard of that name.
+fn open_new_keyboards(
+    seen: &mut HashSet<PathBuf>,
+    only: Option<&str>,
+) -> Result<Vec<(PathBuf, Device)>, HotkeyError> {
     let entries = fs::read_dir("/dev/input")
         .map_err(|e| HotkeyError::PermissionDenied(format!("cannot read /dev/input: {e}")))?;
 
@@ -543,6 +974,11 @@ fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, Hotkey
                 // Only remember devices that could be opened: one that failed
                 // (e.g. before udev set its permissions) is tried again later.
                 seen.insert(path.clone());
+                if dev.name().is_some_and(|n| n.contains(VIRTUAL_DEVICE_TAG))
+                    || only.is_some_and(|only| dev.name() != Some(only))
+                {
+                    continue;
+                }
                 // Check if the device supports KEY events and has keyboard keys.
                 if let Some(supported) = dev.supported_keys() {
                     if supported.contains(KeyCode::KEY_SPACE) {
@@ -551,7 +987,7 @@ fn open_new_keyboards(seen: &mut HashSet<PathBuf>) -> Result<Vec<Device>, Hotkey
                             dev.name().unwrap_or("unknown"),
                             path.display()
                         );
-                        keyboards.push(dev);
+                        keyboards.push((path, dev));
                     }
                 }
             }
@@ -771,33 +1207,106 @@ mod tests {
         assert!(keys.contains(&KeyCode::KEY_1));
     }
 
-    // -- combo_active tests -------------------------------------------------
+    // -- Combo tests ----------------------------------------------------------
 
-    #[test]
-    fn combo_active_all_held() {
-        let groups = build_key_groups("Super+Shift+Space").unwrap();
-        let mut held = HashSet::new();
-        held.insert(KeyCode::KEY_LEFTMETA);
-        held.insert(KeyCode::KEY_RIGHTSHIFT);
-        held.insert(KeyCode::KEY_SPACE);
-        assert!(combo_active(&groups, &held));
+    fn held(keys: &[KeyCode]) -> HashSet<KeyCode> {
+        keys.iter().copied().collect()
     }
 
     #[test]
-    fn combo_active_missing_key() {
-        let groups = build_key_groups("Super+Shift+Space").unwrap();
-        let mut held = HashSet::new();
-        held.insert(KeyCode::KEY_LEFTMETA);
-        held.insert(KeyCode::KEY_RIGHTSHIFT);
-        // Missing Space.
-        assert!(!combo_active(&groups, &held));
+    fn combo_fires_when_the_last_key_is_pressed_with_the_others_held() {
+        let combo = Combo::parse("Super+Shift+Space").unwrap();
+        let mods = held(&[KeyCode::KEY_LEFTMETA, KeyCode::KEY_RIGHTSHIFT]);
+        assert!(combo.fires(KeyCode::KEY_SPACE, &mods));
+        // Missing Shift.
+        assert!(!combo.fires(KeyCode::KEY_SPACE, &held(&[KeyCode::KEY_LEFTMETA])));
+        // Not the trigger.
+        assert!(!combo.fires(KeyCode::KEY_A, &mods));
+        assert!(!combo.fires(KeyCode::KEY_SPACE, &HashSet::new()));
     }
 
     #[test]
-    fn combo_active_empty_held() {
-        let groups = build_key_groups("Super+Space").unwrap();
-        let held = HashSet::new();
-        assert!(!combo_active(&groups, &held));
+    fn combo_needs_exactly_its_own_modifiers() {
+        let combo = Combo::parse("Ctrl+Space").unwrap();
+        assert!(combo.fires(KeyCode::KEY_SPACE, &held(&[KeyCode::KEY_LEFTCTRL])));
+        // Ctrl+Shift+Space is a different shortcut, left to the apps.
+        assert!(!combo.fires(
+            KeyCode::KEY_SPACE,
+            &held(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTSHIFT])
+        ));
+        // Other keys held (not modifiers) do not matter.
+        assert!(combo.fires(
+            KeyCode::KEY_SPACE,
+            &held(&[KeyCode::KEY_LEFTCTRL, KeyCode::KEY_W])
+        ));
+    }
+
+    #[test]
+    fn a_single_key_combo_fires_alone() {
+        let combo = Combo::parse("F13").unwrap();
+        assert!(combo.fires(KeyCode::KEY_F13, &HashSet::new()));
+        assert!(combo.trigger_can_be_kept());
+        assert!(!Combo::parse("Ctrl+Shift").unwrap().trigger_can_be_kept());
+    }
+
+    #[test]
+    fn key_names_map_back_to_their_keys() {
+        for code in [
+            KeyCode::KEY_SPACE,
+            KeyCode::KEY_D,
+            KeyCode::KEY_Z,
+            KeyCode::KEY_1,
+            KeyCode::KEY_0,
+            KeyCode::KEY_F1,
+            KeyCode::KEY_F12,
+            KeyCode::KEY_F13,
+            KeyCode::KEY_F24,
+            KeyCode::KEY_PAUSE,
+            KeyCode::KEY_GRAVE,
+            KeyCode::KEY_INSERT,
+        ] {
+            let name = key_name(code.code()).unwrap_or_else(|| panic!("{code:?} has no name"));
+            assert_eq!(parse_hotkey(&name).unwrap(), vec![code], "{name}");
+        }
+        assert_eq!(key_name(KeyCode::KEY_D.code()).as_deref(), Some("D"));
+        assert_eq!(key_name(KeyCode::KEY_LEFTSHIFT.code()), None);
+        assert_eq!(modifier_name(KeyCode::KEY_RIGHTMETA.code()), Some("Super"));
+        assert_eq!(modifier_name(KeyCode::KEY_A.code()), None);
+    }
+
+    #[test]
+    fn long_keyboard_names_keep_the_tag() {
+        let long = "Logitech G915 TKL LIGHTSPEED Wireless RGB Mechanical Gaming Keyboard ünïcode";
+        let name = mirror_name(long);
+        assert!(name.len() <= 78, "{} bytes", name.len());
+        assert!(name.ends_with(" (Linux Whisper)"));
+        assert_eq!(mirror_name("AT Keyboard"), "AT Keyboard (Linux Whisper)");
+    }
+
+    #[test]
+    fn alt_is_left_alt_and_altgr_is_right_alt() {
+        assert_eq!(
+            parse_hotkey("Alt+S").unwrap(),
+            vec![KeyCode::KEY_LEFTALT, KeyCode::KEY_S]
+        );
+        assert_eq!(modifier_name(KeyCode::KEY_RIGHTALT.code()), Some("AltGr"));
+        // AltGr+S types ś on a Polish layout: it must not fire Alt+S.
+        let combo = Combo::parse("Alt+S").unwrap();
+        assert!(!combo.fires(KeyCode::KEY_S, &held(&[KeyCode::KEY_RIGHTALT])));
+        assert!(combo.fires(KeyCode::KEY_S, &held(&[KeyCode::KEY_LEFTALT])));
+        assert!(hotkey_blocks_typing("AltGr+S"));
+    }
+
+    #[test]
+    fn plain_typing_keys_are_not_good_hotkeys() {
+        assert!(hotkey_blocks_typing("D"));
+        assert!(hotkey_blocks_typing("Shift+D"));
+        assert!(hotkey_blocks_typing("Space"));
+        assert!(!hotkey_blocks_typing("Ctrl+D"));
+        assert!(!hotkey_blocks_typing("Super+Shift+Space"));
+        assert!(!hotkey_blocks_typing("F9"));
+        assert!(!hotkey_blocks_typing("Shift+F13"));
+        assert!(!hotkey_blocks_typing("Pause"));
     }
 
     // -- EvdevHotkeyManager unit tests --------------------------------------
@@ -817,46 +1326,123 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- reconnect helpers ---------------------------------------------------
-
+    /// Against the real kernel: a fake keyboard is grabbed and passed on
+    /// through its copy, all but the hotkey's Space. Needs /dev/uinput and
+    /// /dev/input access; touches no other keyboard, and nothing reaches the
+    /// desktop (the copy is grabbed by the test). Run with
+    /// `cargo test -p linux-whisper-platform --lib -- --ignored grab`.
     #[test]
-    fn reconnect_backoff_first_attempt_is_1s() {
-        assert_eq!(reconnect_backoff_secs(1), 1);
-    }
+    #[ignore]
+    fn grab_keeps_the_hotkey_from_other_apps() {
+        use std::os::fd::AsFd;
 
-    #[test]
-    fn reconnect_backoff_exponential() {
-        assert_eq!(reconnect_backoff_secs(2), 2);
-        assert_eq!(reconnect_backoff_secs(3), 4);
-        assert_eq!(reconnect_backoff_secs(4), 8);
-        assert_eq!(reconnect_backoff_secs(5), 16);
-    }
+        let name = format!("LW test keyboard {}", std::process::id());
+        let mut keys = AttributeSet::<KeyCode>::new();
+        for code in KeyCode::KEY_ESC.code()..=KeyCode::KEY_MICMUTE.code() {
+            keys.insert(KeyCode::new(code));
+        }
+        let mut fake = VirtualDevice::builder()
+            .and_then(|b| b.name(&name).with_keys(&keys))
+            .and_then(|b| b.build())
+            .expect("cannot create a fake keyboard: no /dev/uinput access");
+        let fake_path = fake
+            .enumerate_dev_nodes_blocking()
+            .unwrap()
+            .flatten()
+            .find(|p| p.to_string_lossy().contains("event"))
+            .expect("fake keyboard node");
+        // udev gives the new node its permissions a moment after it appears.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Device::open(&fake_path).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "cannot open {}",
+                fake_path.display()
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
 
-    #[test]
-    fn reconnect_backoff_capped_at_30s() {
-        assert_eq!(reconnect_backoff_secs(6), 30);
-        assert_eq!(reconnect_backoff_secs(10), 30);
-        assert_eq!(reconnect_backoff_secs(100), 30);
-    }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let mut mgr = EvdevHotkeyManager::new();
+        mgr.only = Some(name.clone());
+        mgr.set_event_sender(tx);
+        mgr.keep_keys_from_apps(true);
+        mgr.bind("Super+Shift+Space").unwrap();
 
-    #[test]
-    fn reconnect_backoff_zero_attempt_is_1s() {
-        // Edge case: should not underflow or panic.
-        assert_eq!(reconnect_backoff_secs(0), 1);
-    }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !mgr.is_keeping_keys() {
+            assert!(
+                Instant::now() < deadline,
+                "the fake keyboard was never grabbed"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        // Grabbed by the listener: a second grab fails.
+        let mut probe = Device::open(&fake_path).unwrap();
+        assert!(probe.grab().is_err(), "fake keyboard not grabbed");
+        drop(probe);
 
-    #[test]
-    fn combo_state_resets_when_held_keys_cleared() {
-        // Simulates what happens on device reconnect: held_keys is cleared,
-        // so the combo must become inactive.
-        let groups = build_key_groups("Super+Space").unwrap();
-        let mut held = HashSet::new();
-        held.insert(KeyCode::KEY_LEFTMETA);
-        held.insert(KeyCode::KEY_SPACE);
-        assert!(combo_active(&groups, &held));
+        // The copy: grab it so that what it sends stays with this test.
+        let mirror_name = mirror_name(&name);
+        let mut mirror = fs::read_dir("/dev/input")
+            .unwrap()
+            .flatten()
+            .filter_map(|e| Device::open(e.path()).ok())
+            .find(|d| d.name() == Some(mirror_name.as_str()))
+            .expect("copy of the fake keyboard");
+        mirror.grab().unwrap();
+        mirror.set_nonblocking(true).unwrap();
 
-        // Reconnect: clear held keys.
-        held.clear();
-        assert!(!combo_active(&groups, &held));
+        let press = |fake: &mut VirtualDevice, key: KeyCode, value: i32| {
+            fake.emit(&[InputEvent::new(EventType::KEY.0, key.code(), value)])
+                .unwrap();
+            thread::sleep(Duration::from_millis(20));
+        };
+        press(&mut fake, KeyCode::KEY_A, 1);
+        press(&mut fake, KeyCode::KEY_A, 0);
+        press(&mut fake, KeyCode::KEY_LEFTMETA, 1);
+        press(&mut fake, KeyCode::KEY_LEFTSHIFT, 1);
+        press(&mut fake, KeyCode::KEY_SPACE, 1);
+        press(&mut fake, KeyCode::KEY_SPACE, 0);
+        press(&mut fake, KeyCode::KEY_LEFTSHIFT, 0);
+        press(&mut fake, KeyCode::KEY_LEFTMETA, 0);
+        thread::sleep(Duration::from_millis(200));
+
+        let mut passed = Vec::new();
+        loop {
+            let ready = {
+                let mut fds = [PollFd::new(mirror.as_fd(), PollFlags::POLLIN)];
+                poll(&mut fds, PollTimeout::from(200u8)).unwrap_or(0) > 0
+            };
+            if !ready {
+                break;
+            }
+            for e in mirror.fetch_events().unwrap() {
+                if e.event_type() == EventType::KEY {
+                    passed.push((KeyCode::new(e.code()), e.value()));
+                }
+            }
+        }
+        assert_eq!(
+            passed,
+            vec![
+                (KeyCode::KEY_A, 1),
+                (KeyCode::KEY_A, 0),
+                (KeyCode::KEY_LEFTMETA, 1),
+                (KeyCode::KEY_LEFTSHIFT, 1),
+                (NO_OP_KEY, 1),
+                (NO_OP_KEY, 0),
+                (KeyCode::KEY_LEFTSHIFT, 0),
+                (KeyCode::KEY_LEFTMETA, 0),
+            ]
+        );
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyEvent::Pressed));
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyEvent::Released));
+
+        // Unbinding gives the keyboard back.
+        mgr.unbind().unwrap();
+        assert!(!mgr.is_keeping_keys());
+        let mut probe = Device::open(&fake_path).unwrap();
+        assert!(probe.grab().is_ok(), "fake keyboard still grabbed");
     }
 }

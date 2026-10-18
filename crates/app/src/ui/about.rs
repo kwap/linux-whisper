@@ -5,9 +5,6 @@ use gtk::License;
 ///
 /// When `parent` is `None` the dialog is presented without a transient parent.
 pub fn show_about(parent: Option<&impl IsA<gtk::Widget>>) {
-    // Register the app icon from the bundled SVG so it shows in the dialog.
-    register_app_icon();
-
     let dialog = adw::AboutDialog::builder()
         .application_name("Linux Whisper")
         .application_icon("com.linuxwhisper.LinuxWhisper")
@@ -35,19 +32,4 @@ pub fn show_about(parent: Option<&impl IsA<gtk::Widget>>) {
     );
 
     dialog.present(parent);
-}
-
-/// Register the application icon with GTK's icon theme so it can be
-/// referenced by name in the About dialog and elsewhere.
-fn register_app_icon() {
-    use gtk::gdk;
-
-    // Try loading from standard install paths first.
-    let icon_theme = gtk::IconTheme::for_display(&gdk::Display::default().expect("no display"));
-
-    // If not installed system-wide, add our data/icons directory.
-    let dev_icon_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/icons");
-    if std::path::Path::new(dev_icon_dir).exists() {
-        icon_theme.add_search_path(dev_icon_dir);
-    }
 }

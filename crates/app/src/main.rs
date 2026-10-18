@@ -30,7 +30,7 @@ use linux_whisper_whisper::worker::WhisperWorker;
 use context::{AppAction, AppContext};
 use services::dictation::DictationService;
 use services::models::{self, ModelEvent};
-use ui::window::MainWindow;
+use ui::window::{Activity, MainWindow};
 
 const APP_ID: &str = "com.linuxwhisper.LinuxWhisper";
 
@@ -75,6 +75,9 @@ fn main() {
         tokio::runtime::Runtime::new().expect("failed to create tokio runtime"),
     ));
 
+    // Ctrl+Z in a terminal must not stop the app while it holds the keyboards.
+    linux_whisper_platform::hotkey::release_keyboards_on_stop(rt.handle());
+
     let (actions_tx, actions_rx) = std_mpsc::channel::<AppAction>();
     let ctx = AppContext {
         app: app.clone(),
@@ -110,14 +113,17 @@ struct Controller {
     ctx: AppContext,
     capture: RefCell<Option<CpalCapture>>,
     recording: Cell<bool>,
+    /// Recordings stopped and still being transcribed.
+    transcribing: Cell<usize>,
     tray: Option<Arc<TrayHandle>>,
     /// Whether a tray host is running, i.e. whether the tray icon is visible.
     tray_visible: bool,
     window: RefCell<Option<MainWindow>>,
     hotkey: RefCell<Option<EvdevHotkeyManager>>,
     hotkey_problem_shown: Cell<bool>,
-    /// The last dictation, shown when the window is opened later.
-    last_dictation: RefCell<Option<(Transcript, String)>>,
+    /// This session's dictations and the text delivered for each, shown when
+    /// the window is opened later.
+    history: RefCell<Vec<(Transcript, String)>>,
 }
 
 impl Controller {
@@ -128,6 +134,7 @@ impl Controller {
             config.model, config.language, config.hotkey
         );
         apply_theme(config.theme);
+        ui::init_style();
 
         // Audio capture.
         let capture = match CpalCapture::new() {
@@ -176,15 +183,25 @@ impl Controller {
             ctx,
             capture: RefCell::new(capture),
             recording: Cell::new(false),
+            transcribing: Cell::new(0),
             tray,
             tray_visible,
             window: RefCell::new(None),
             hotkey: RefCell::new(None),
             hotkey_problem_shown: Cell::new(false),
-            last_dictation: RefCell::new(None),
+            history: RefCell::new(Vec::new()),
         });
 
         controller.bind_hotkey();
+
+        // Also reachable from outside, e.g. for a shortcut set in the
+        // desktop's settings: gapplication action com.linuxwhisper.LinuxWhisper toggle-recording
+        let toggle = gio::SimpleAction::new("toggle-recording", None);
+        {
+            let ctx = controller.ctx.clone();
+            toggle.connect_activate(move |_, _| ctx.send(AppAction::ToggleRecording));
+        }
+        controller.ctx.app.add_action(&toggle);
 
         // Poll the action channel from the GTK main loop.
         {
@@ -242,10 +259,21 @@ impl Controller {
             AppAction::HotkeyChanged => {
                 self.hotkey_problem_shown.set(false);
                 self.bind_hotkey();
+                if let Some(ref win) = *self.window.borrow() {
+                    win.refresh_hotkey();
+                }
+            }
+            AppAction::SuspendHotkey => {
+                // Dropping the manager stops its listener and releases the
+                // keyboards.
+                self.hotkey.borrow_mut().take();
             }
             AppAction::ModelChanged => {
                 if let Some(ref win) = *self.window.borrow() {
                     win.sync_model_dropdown();
+                    if !self.recording.get() {
+                        win.set_ready_status();
+                    }
                 }
                 self.set_tray_status(self.ready_text());
             }
@@ -265,8 +293,23 @@ impl Controller {
         let mut win = self.window.borrow_mut();
         let win = win.get_or_insert_with(|| {
             let win = MainWindow::new(&self.ctx);
-            if let Some((transcript, label)) = self.last_dictation.borrow().clone() {
-                win.show_transcript(transcript, &label);
+            for (transcript, text) in self.history.borrow().iter() {
+                win.add_transcript(transcript.clone(), text.clone());
+            }
+            // Opened while dictating: show it.
+            if self.recording.get() {
+                let device = self
+                    .capture
+                    .borrow()
+                    .as_ref()
+                    .and_then(|c| c.active_device_name());
+                win.set_status(&format!(
+                    "Recording from {}",
+                    device.as_deref().unwrap_or("the microphone")
+                ));
+                win.set_activity(Activity::Recording);
+            } else if self.transcribing.get() > 0 {
+                win.set_activity(Activity::Transcribing);
             }
             win
         });
@@ -351,6 +394,7 @@ impl Controller {
         let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::channel::<HotkeyEvent>(16);
         let mut manager = EvdevHotkeyManager::new();
         manager.set_event_sender(hotkey_tx);
+        manager.keep_keys_from_apps(config.block_hotkey_keys);
 
         match manager.bind(&config.hotkey) {
             Ok(()) => {
@@ -426,7 +470,8 @@ impl Controller {
                     .unwrap_or_else(|| "microphone".into());
                 info!("Recording started from {device}");
                 self.recording.set(true);
-                self.set_recording_ui(true, format!("Recording from {device}\u{2026}"));
+                self.set_recording_ui(true, format!("Recording from {device}"));
+                self.show_recording_time();
             }
             Err(e) => {
                 error!("Failed to start recording: {e}");
@@ -460,13 +505,11 @@ impl Controller {
             self.set_recording_ui(false, self.ready_text());
             return;
         }
+        self.transcribing.set(self.transcribing.get() + 1);
         self.set_recording_ui(false, "Transcribing\u{2026}".into());
 
         let config = AppConfig::load();
-        let options = linux_whisper_whisper::engine::TranscribeOptions {
-            language: (config.language != "auto").then(|| config.language.clone()),
-            translate: false,
-        };
+        let options = linux_whisper_whisper::engine::TranscribeOptions::from_config(&config);
 
         // Resample, transcribe and format off the GTK thread.
         let (result_tx, result_rx) = std_mpsc::channel::<Result<(Transcript, String), String>>();
@@ -523,6 +566,8 @@ impl Controller {
 
     /// Show a finished transcription and deliver its text.
     fn finish_dictation(self: &Rc<Self>, result: Result<(Transcript, String), String>) {
+        self.transcribing
+            .set(self.transcribing.get().saturating_sub(1));
         // A second recording may already be running; leave its status alone.
         let status = |text: String| {
             if !self.recording.get() {
@@ -552,15 +597,10 @@ impl Controller {
             return;
         }
 
-        let label = format!(
-            "Dictation \u{2014} {} segment(s), {:.1}s",
-            transcript.segment_count(),
-            transcript.duration
-        );
         if let Some(ref win) = *self.window.borrow() {
-            win.show_transcript(transcript.clone(), &label);
+            win.add_transcript(transcript.clone(), text.clone());
         }
-        *self.last_dictation.borrow_mut() = Some((transcript, label));
+        self.history.borrow_mut().push((transcript, text.clone()));
 
         // Decided now, not when recording stopped: typing into this app's own
         // window would put the text there (and a space would press its focused
@@ -616,8 +656,15 @@ impl Controller {
 
     fn set_recording_ui(&self, recording: bool, status: String) {
         if let Some(ref win) = *self.window.borrow() {
-            win.set_recording_state(recording);
-            win.status_label.set_label(&status);
+            if recording {
+                win.set_status(&status);
+                win.set_activity(Activity::Recording);
+            } else if self.transcribing.get() > 0 {
+                win.set_activity(Activity::Transcribing);
+            } else {
+                win.set_ready_status();
+                win.set_activity(Activity::Idle);
+            }
         }
         if let Some(ref tray) = self.tray {
             let tray = Arc::clone(tray);
@@ -629,6 +676,27 @@ impl Controller {
                 .await;
             });
         }
+    }
+
+    /// Keep the window's recording time up to date while recording.
+    fn show_recording_time(self: &Rc<Self>) {
+        let this = Rc::clone(self);
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            if !this.recording.get() {
+                return glib::ControlFlow::Break;
+            }
+            let secs = this
+                .capture
+                .borrow()
+                .as_ref()
+                .map(CpalCapture::recorded_secs);
+            if let (Some(secs), Some(win)) = (secs, this.window.borrow().as_ref()) {
+                if win.window.is_visible() {
+                    win.update_time(secs);
+                }
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     fn set_tray_status(&self, status: String) {

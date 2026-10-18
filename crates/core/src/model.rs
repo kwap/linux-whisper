@@ -30,6 +30,9 @@ pub struct Segment {
     /// Optional confidence score in the range 0.0 to 1.0, where 1.0 indicates
     /// highest confidence. Not all models or configurations produce this value.
     pub confidence: Option<f32>,
+    /// ISO 639-1 code of the language this segment was transcribed in.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Segment {
@@ -47,6 +50,7 @@ impl Segment {
             end,
             text: text.into(),
             confidence: None,
+            language: None,
         }
     }
 

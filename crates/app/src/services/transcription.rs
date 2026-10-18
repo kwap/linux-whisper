@@ -38,14 +38,13 @@ impl TranscriptionService {
     /// # Arguments
     ///
     /// * `path`     - Path to the source audio file (wav, mp3, ogg, m4a, etc.).
-    /// * `language` - Optional ISO 639-1 language code. `None` means
-    ///   auto-detect.
+    /// * `options`  - Language choice (see [`TranscribeOptions::from_config`]).
     ///
     /// Returns a [`Transcript`] containing timed segments on success.
     pub async fn transcribe_file(
         &self,
         path: &Path,
-        language: Option<String>,
+        options: TranscribeOptions,
     ) -> Result<Transcript, Box<dyn std::error::Error>> {
         info!("Transcribing file: {}", path.display());
 
@@ -61,11 +60,6 @@ impl TranscriptionService {
             audio.samples.len(),
             audio.sample_rate,
         );
-
-        let options = TranscribeOptions {
-            language,
-            translate: false,
-        };
 
         let transcript = self.worker.transcribe(audio, options).await.map_err(|e| {
             error!("Transcription failed for {}: {e}", path.display());

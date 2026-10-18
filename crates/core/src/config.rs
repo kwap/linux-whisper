@@ -63,11 +63,19 @@ pub struct AppConfig {
     /// Global hotkey used to trigger recording (e.g. "Super+Shift+Space").
     pub hotkey: String,
 
+    /// Whether the hotkey's keys are kept from the focused app, so pressing
+    /// it does not also type (e.g.) a space there.
+    pub block_hotkey_keys: bool,
+
     /// Whether to automatically paste transcribed text into the focused window.
     pub auto_paste: bool,
 
     /// Language code passed to the Whisper model (e.g. "en", "de", "auto").
     pub language: String,
+
+    /// With `language` "auto": the languages the user speaks (ISO 639-1
+    /// codes). Detection only chooses among these; empty means any language.
+    pub languages: Vec<String>,
 
     /// Whisper model size to use (e.g. "tiny", "base", "small", "medium", "large").
     pub model: String,
@@ -97,8 +105,10 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             hotkey: "Super+Shift+Space".to_string(),
+            block_hotkey_keys: true,
             auto_paste: true,
             language: "auto".to_string(),
+            languages: Vec::new(),
             model: "base".to_string(),
             theme: Theme::default(),
             minimize_to_tray: true,
@@ -275,14 +285,18 @@ mod tests {
         assert_eq!(cfg.theme, Theme::System);
         assert!(cfg.minimize_to_tray);
         assert!(!cfg.show_confidence);
+        assert!(cfg.block_hotkey_keys);
+        assert!(cfg.languages.is_empty());
     }
 
     #[test]
     fn to_toml_from_toml_round_trip() {
         let original = AppConfig {
             hotkey: "Ctrl+Alt+R".to_string(),
+            block_hotkey_keys: false,
             auto_paste: false,
             language: "de".to_string(),
+            languages: vec!["pl".to_string(), "en".to_string()],
             model: "large".to_string(),
             theme: Theme::Dark,
             minimize_to_tray: false,

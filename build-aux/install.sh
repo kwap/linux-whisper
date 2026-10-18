@@ -48,7 +48,7 @@ as_root udevadm control --reload-rules 2>/dev/null || true
 as_root udevadm trigger --name-match=uinput 2>/dev/null || true
 
 echo "Done. Start Linux Whisper from your applications menu, or run: linux-whisper"
-if ! id -nG "$USER" | tr ' ' '\n' | grep -qx input; then
+if ! id -nG | tr ' ' '\n' | grep -qx input; then
     echo
     echo "For the global hotkey, add yourself to the input group, then log out and back in:"
     echo "    sudo usermod -aG input \$USER"

@@ -57,22 +57,14 @@ check: lint fmt-check
 install:
     ./build-aux/install.sh "{{prefix}}"
 
-# Uninstall the app
+# Uninstall the app (settings and models are kept)
 uninstall:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    sudo=""; [ -w "{{prefix}}/bin" ] || sudo=sudo
-    $sudo rm -f "{{prefix}}/bin/linux-whisper" \
-        "{{prefix}}/share/applications/{{app_id}}.desktop" \
-        "{{prefix}}/share/icons/hicolor/scalable/apps/{{app_id}}.svg" \
-        "{{prefix}}/share/icons/hicolor/symbolic/apps/{{app_id}}-symbolic.svg" \
-        "{{prefix}}/share/glib-2.0/schemas/{{app_id}}.gschema.xml" \
-        "{{prefix}}/share/metainfo/{{app_id}}.metainfo.xml"
-    sudo rm -f /etc/udev/rules.d/60-linux-whisper-uinput.rules
+    ./build-aux/uninstall.sh "{{prefix}}"
 
-# Check the virtual paste keyboard against the real kernel (needs /dev/uinput access)
+# Check the virtual keyboards (paste, and keeping the hotkey from apps) against
+# the real kernel; needs /dev/uinput and /dev/input access
 test-uinput:
-    cargo test -p linux-whisper-platform --lib -- --ignored uinput
+    cargo test -p linux-whisper-platform --lib -- --ignored --test-threads=1
 
 # Clean all build artifacts
 clean:

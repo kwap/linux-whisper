@@ -89,16 +89,7 @@ impl DictationService {
             audio.samples.len(),
         );
 
-        // Build transcription options from the current config.
-        let language = match self.config.language.as_str() {
-            "auto" => None,
-            lang => Some(lang.to_string()),
-        };
-
-        let options = TranscribeOptions {
-            language,
-            translate: false,
-        };
+        let options = TranscribeOptions::from_config(&self.config);
 
         let transcript = self.worker.transcribe(audio, options).await?;
 
