@@ -741,6 +741,7 @@ impl Listener {
         loop {
             if self.shutdown.load(Ordering::Relaxed) {
                 debug!("Hotkey listener shutting down");
+                MODIFIER_HELD.store(false, Ordering::Relaxed);
                 // Dropping the keyboards releases them and removes their copies.
                 return;
             }
@@ -817,6 +818,7 @@ impl Listener {
                 self.held.clear();
                 self.swallowed.clear();
                 self.fired = false;
+                MODIFIER_HELD.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -891,8 +893,25 @@ impl Listener {
                 _ => {}
             }
         }
+        MODIFIER_HELD.store(
+            self.held
+                .iter()
+                .any(|key| modifier_name(key.code()).is_some()),
+            Ordering::Relaxed,
+        );
         Ok(())
     }
+}
+
+/// Whether a modifier key is held on a keyboard, as the listener last saw it.
+static MODIFIER_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Whether the user is holding Ctrl, Alt, Shift or Super on a keyboard, as
+/// far as the hotkey listener knows (false while it is not running). Keys
+/// typed on the virtual keyboard meanwhile would combine with it: Super+L
+/// locks the screen.
+pub fn modifier_keys_held() -> bool {
+    MODIFIER_HELD.load(Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------

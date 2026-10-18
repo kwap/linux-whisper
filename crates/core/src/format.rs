@@ -39,6 +39,22 @@ const PARAGRAPH_GAP_SECS: f64 = 1.5;
 /// is normalized, sentences are capitalized, and space-before-punctuation is
 /// cleaned up.
 pub fn basic_format_segments(segments: &[Segment], opts: &FormatOptions) -> String {
+    format_segments(segments, opts, true)
+}
+
+/// Format text typed while it is spoken: as [`basic_format_segments`], but
+/// on one line. A paragraph break would be typed as Enter, which sends a
+/// chat message or runs a command; a pause to think is not the end of one.
+pub fn format_typed_segments(segments: &[Segment], opts: &FormatOptions) -> String {
+    let text = format_segments(segments, opts, false);
+    if text.contains('\n') {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        text
+    }
+}
+
+fn format_segments(segments: &[Segment], opts: &FormatOptions, paragraphs: bool) -> String {
     if !opts.enabled || segments.is_empty() {
         return join_segments(segments);
     }
@@ -55,7 +71,7 @@ pub fn basic_format_segments(segments: &[Segment], opts: &FormatOptions) -> Stri
             let prev = &segments[i - 1];
             let gap = seg.start - prev.end;
 
-            if gap > PARAGRAPH_GAP_SECS {
+            if paragraphs && gap > PARAGRAPH_GAP_SECS {
                 // Trim trailing whitespace before paragraph break.
                 let trimmed = result.trim_end().to_string();
                 result.clear();
@@ -265,6 +281,18 @@ mod tests {
             "gap of 2.0s should create paragraph break, got:\n{result}"
         );
         assert_eq!(result, "First paragraph.\n\nSecond paragraph.");
+    }
+
+    #[test]
+    fn typed_text_stays_on_one_line() {
+        let segs = vec![
+            Segment::new(0.0, 1.0, "I would like to"),
+            Segment::new(4.0, 5.0, "go home."),
+        ];
+        assert_eq!(
+            format_typed_segments(&segs, &default_opts()),
+            "I would like to go home."
+        );
     }
 
     #[test]

@@ -16,19 +16,22 @@ use linux_whisper_audio::capture::{AudioBuffer, AudioCapture, CpalCapture};
 use linux_whisper_audio::resample::resample;
 use linux_whisper_core::config::{AppConfig, Theme};
 use linux_whisper_core::format::tidy_text;
-use linux_whisper_core::model::Transcript;
+use linux_whisper_core::model::{languages_spoken, Transcript, TranscriptSource};
 use linux_whisper_llm::model_manager::LlmModelManager;
 use linux_whisper_llm::worker::LlmWorker;
 use linux_whisper_platform::display::{self, DisplayServer};
 use linux_whisper_platform::hotkey::{EvdevHotkeyManager, HotkeyEvent, HotkeyManager};
+use linux_whisper_platform::live_typing::KeyboardLayout;
 use linux_whisper_platform::text_inject::{Delivery, UinputPaster};
 use linux_whisper_platform::tray::{spawn_tray, TrayAction, TrayHandle};
+use linux_whisper_whisper::engine::TranscribeOptions;
 use linux_whisper_whisper::model_manager::ModelManager;
 use linux_whisper_whisper::model_registry;
-use linux_whisper_whisper::worker::WhisperWorker;
+use linux_whisper_whisper::worker::{LiveContext, LiveText, WhisperWorker};
 
 use context::{AppAction, AppContext};
 use services::dictation::DictationService;
+use services::live::{LiveDictation, Typist};
 use services::models::{self, ModelEvent};
 use ui::window::{Activity, MainWindow};
 
@@ -36,6 +39,10 @@ const APP_ID: &str = "com.linuxwhisper.LinuxWhisper";
 
 /// Recordings shorter than this are treated as an accidental double press.
 const MIN_RECORDING_SECS: f64 = 0.3;
+
+/// How often live dictation looks for new audio to transcribe. An update
+/// starts as soon as the last one is done and there is something new.
+const LIVE_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 
 fn main() {
     // Initialize logging.
@@ -124,6 +131,13 @@ struct Controller {
     /// This session's dictations and the text delivered for each, shown when
     /// the window is opened later.
     history: RefCell<Vec<(Transcript, String)>>,
+    /// The dictation being typed while it is spoken (until its final text
+    /// is typed, which can be after the recording stopped).
+    live: RefCell<Option<LiveDictation>>,
+    /// Whether the current recording is typed while it is spoken.
+    recording_live: Cell<bool>,
+    dictations: Cell<u64>,
+    typist: Typist,
 }
 
 impl Controller {
@@ -190,6 +204,10 @@ impl Controller {
             hotkey: RefCell::new(None),
             hotkey_problem_shown: Cell::new(false),
             history: RefCell::new(Vec::new()),
+            live: RefCell::new(None),
+            recording_live: Cell::new(false),
+            dictations: Cell::new(0),
+            typist: Typist::new(),
         });
 
         controller.bind_hotkey();
@@ -222,10 +240,10 @@ impl Controller {
         }
         controller.load_models(&config);
 
-        // Create the virtual paste keyboard ahead of the first dictation:
-        // the compositor needs a moment to pick up a new input device.
+        // Create the virtual keyboard ahead of the first dictation: the
+        // compositor needs a moment to pick up a new input device.
         if config.auto_paste
-            && display::detect() == DisplayServer::Wayland
+            && (config.live_typing || display::detect() == DisplayServer::Wayland)
             && UinputPaster::is_permitted()
         {
             controller.ctx.rt.spawn_blocking(|| {
@@ -456,6 +474,8 @@ impl Controller {
             return;
         }
 
+        let layout = self.live_typing_layout(&config);
+
         let mut capture = self.capture.borrow_mut();
         let Some(capture) = capture.as_mut() else {
             self.notify("record", "Cannot record", "No audio system is available.");
@@ -469,9 +489,13 @@ impl Controller {
                     .active_device_name()
                     .unwrap_or_else(|| "microphone".into());
                 info!("Recording started from {device}");
+                let rate = capture.sample_rate();
                 self.recording.set(true);
                 self.set_recording_ui(true, format!("Recording from {device}"));
                 self.show_recording_time();
+                if let Some(layout) = layout {
+                    self.start_live(layout, &config, rate);
+                }
             }
             Err(e) => {
                 error!("Failed to start recording: {e}");
@@ -481,6 +505,10 @@ impl Controller {
     }
 
     fn stop_and_transcribe(self: &Rc<Self>) {
+        if self.recording_live.get() {
+            self.stop_live();
+            return;
+        }
         let raw = {
             let mut capture = self.capture.borrow_mut();
             let Some(capture) = capture.as_mut() else {
@@ -606,12 +634,7 @@ impl Controller {
         // window would put the text there (and a space would press its focused
         // button). The text is shown there and copied to the clipboard instead.
         let config = AppConfig::load();
-        let own_window_focused = self
-            .window
-            .borrow()
-            .as_ref()
-            .is_some_and(|w| w.window.is_active());
-        let insert = config.auto_paste && !own_window_focused;
+        let insert = config.auto_paste && !self.own_window_focused();
 
         let (delivery_tx, delivery_rx) = std_mpsc::channel::<Delivery>();
         self.ctx.rt.spawn_blocking(move || {
@@ -643,6 +666,340 @@ impl Controller {
             }
             None => error!("Text delivery stopped unexpectedly"),
         });
+    }
+
+    // -- Live dictation ------------------------------------------------------
+
+    /// The keyboard layout to type this dictation with while it is spoken,
+    /// or `None` to insert the text when recording stops.
+    fn live_typing_layout(&self, config: &AppConfig) -> Option<KeyboardLayout> {
+        if !(config.auto_paste && config.live_typing)
+            || !UinputPaster::is_permitted()
+            // Typing into this app's own window would put the text there.
+            || self.own_window_focused()
+            // The previous dictation is still being finished.
+            || self.live.borrow().is_some()
+        {
+            return None;
+        }
+        services::live::keyboard_layout()
+    }
+
+    fn own_window_focused(&self) -> bool {
+        self.window
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.window.is_active())
+    }
+
+    fn start_live(self: &Rc<Self>, layout: KeyboardLayout, config: &AppConfig, rate: u32) {
+        let id = self.dictations.get() + 1;
+        self.dictations.set(id);
+        self.typist
+            .begin(id, layout, config.paste_shortcut, display::detect());
+        *self.live.borrow_mut() = Some(LiveDictation::new(
+            id,
+            rate,
+            TranscribeOptions::from_config(config),
+            config.format.clone(),
+        ));
+        self.recording_live.set(true);
+
+        let this = Rc::clone(self);
+        glib::timeout_add_local(LIVE_UPDATE_INTERVAL, move || {
+            if !this.recording_live.get() {
+                return glib::ControlFlow::Break;
+            }
+            this.request_live_update();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Transcribe what was said since the last update, unless an update is
+    /// still being worked out or nothing new was recorded.
+    fn request_live_update(self: &Rc<Self>) {
+        let request = {
+            let mut live = self.live.borrow_mut();
+            let capture = self.capture.borrow();
+            let (Some(live), Some(capture)) = (live.as_mut(), capture.as_ref()) else {
+                return;
+            };
+            let recorded = capture.recorded_len();
+            // Recording can start while the model is still loading.
+            let ready = self.ctx.worker.loaded_model().is_some();
+            if !ready || live.busy || recorded < live.heard + live.rate as usize / 10 {
+                return;
+            }
+            live.heard = recorded;
+            live.busy = true;
+            (
+                live.id,
+                capture.samples_from(live.unfinished_from),
+                live.rate,
+                live.context.clone(),
+                live.options.clone(),
+            )
+        };
+        let (id, samples, rate, context, options) = request;
+        self.send_live_update(id, samples, rate, context, options, false);
+    }
+
+    fn send_live_update(
+        self: &Rc<Self>,
+        id: u64,
+        samples: Vec<f32>,
+        rate: u32,
+        context: LiveContext,
+        options: TranscribeOptions,
+        finish: bool,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<LiveText, String>>();
+        let worker = self.ctx.worker.clone();
+        self.ctx.rt.spawn(async move {
+            let audio = tokio::task::spawn_blocking(move || AudioBuffer {
+                samples: resample(&samples, rate, AudioBuffer::TARGET_SAMPLE_RATE),
+                sample_rate: AudioBuffer::TARGET_SAMPLE_RATE,
+            })
+            .await;
+            let result = match audio {
+                Ok(audio) => worker
+                    .transcribe_live(audio, options, context, finish)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(_) => Err("resampling failed".into()),
+            };
+            let _ = tx.send(result);
+        });
+
+        let this = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let result = rx
+                .await
+                .unwrap_or_else(|_| Err("transcription stopped unexpectedly".into()));
+            if finish {
+                this.finish_live(id, result);
+            } else {
+                this.live_updated(id, result);
+            }
+        });
+    }
+
+    /// Type the text as it reads after an update.
+    fn live_updated(self: &Rc<Self>, id: u64, result: Result<LiveText, String>) {
+        let (text, ended) = {
+            let mut live = self.live.borrow_mut();
+            let Some(live) = live.as_mut().filter(|l| l.id == id) else {
+                return;
+            };
+            live.busy = false;
+            match result {
+                Ok(update) => live.apply(update),
+                // Tried again with the next update.
+                Err(e) => warn!("Live transcription failed: {e}"),
+            }
+            let text = live.text();
+            let changed = text != live.shown;
+            if changed {
+                live.shown.clone_from(&text);
+            }
+            (changed.then_some(text), live.ended.take())
+        };
+        if let Some(text) = text {
+            if !self.own_window_focused() {
+                self.typist.show(id, text);
+            }
+        }
+        // The recording stopped while this update was being worked out.
+        if let Some(samples) = ended {
+            self.end_live(id, samples);
+        }
+    }
+
+    fn stop_live(self: &Rc<Self>) {
+        self.recording_live.set(false);
+        let raw = {
+            let mut capture = self.capture.borrow_mut();
+            let Some(capture) = capture.as_mut() else {
+                return;
+            };
+            capture.stop_recording_raw()
+        };
+        self.recording.set(false);
+        let id = self.live.borrow().as_ref().map_or(0, |l| l.id);
+
+        let samples = match raw {
+            Ok((samples, rate))
+                if samples.len() as f64 / f64::from(rate.max(1)) >= MIN_RECORDING_SECS =>
+            {
+                info!(
+                    "Recording stopped — {:.1}s of audio",
+                    samples.len() as f64 / f64::from(rate.max(1))
+                );
+                samples
+            }
+            other => {
+                if let Err(e) = other {
+                    error!("Failed to stop recording: {e}");
+                }
+                // Too short to be meant; erase anything typed.
+                self.live.borrow_mut().take();
+                self.typist.end(id, String::new());
+                self.set_recording_ui(false, self.ready_text());
+                return;
+            }
+        };
+        self.transcribing.set(self.transcribing.get() + 1);
+        self.set_recording_ui(false, "Transcribing\u{2026}".into());
+
+        {
+            let mut live = self.live.borrow_mut();
+            let Some(live) = live.as_mut() else {
+                return;
+            };
+            if live.busy {
+                live.ended = Some(samples);
+                return;
+            }
+        }
+        self.end_live(id, samples);
+    }
+
+    /// Transcribe the rest of the recording and make all of it final.
+    fn end_live(self: &Rc<Self>, id: u64, samples: Vec<f32>) {
+        let request = {
+            let mut live = self.live.borrow_mut();
+            let Some(live) = live.as_mut().filter(|l| l.id == id) else {
+                return;
+            };
+            live.busy = true;
+            live.heard = samples.len();
+            let rest = samples
+                .get(live.unfinished_from..)
+                .unwrap_or_default()
+                .to_vec();
+            (rest, live.rate, live.context.clone(), live.options.clone())
+        };
+        let (rest, rate, context, options) = request;
+        self.send_live_update(id, rest, rate, context, options, true);
+    }
+
+    /// Type the final text, then show and keep the dictation as one that was
+    /// inserted when recording stopped.
+    fn finish_live(self: &Rc<Self>, id: u64, result: Result<LiveText, String>) {
+        let Some(mut live) = self.live.borrow_mut().take_if(|l| l.id == id) else {
+            return;
+        };
+        if let Err(e) = &result {
+            // Leave what was typed as it is.
+            self.typist.end(id, live.shown.clone());
+            self.finish_dictation(Err(e.clone()));
+            return;
+        }
+        if let Ok(update) = result {
+            live.apply(update);
+        }
+        live.guess.clear();
+
+        let mut transcript = Transcript::new(
+            "Transcription",
+            live.options.language.clone(),
+            self.ctx.worker.loaded_model().unwrap_or_default(),
+            TranscriptSource::Dictation,
+        );
+        transcript.duration = live.heard as f64 / f64::from(live.rate.max(1));
+        transcript.segments = live.done.clone();
+        if transcript.language.is_none() {
+            transcript.language = languages_spoken(&transcript.segments).into_iter().next();
+        }
+        let text = live.text();
+
+        // AI formatting rewrites the whole text, which is then corrected
+        // like any other change.
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        if live.format.llm_enabled && !text.is_empty() {
+            let llm_worker = self.ctx.llm_worker.clone();
+            let full_text = transcript.full_text();
+            let basic = text.clone();
+            self.ctx.rt.spawn(async move {
+                let text = match llm_worker.format_text(full_text).await {
+                    Ok(formatted) => {
+                        info!("AI formatting applied");
+                        tidy_text(&formatted)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }
+                    Err(e) => {
+                        warn!("AI formatting failed, using basic formatting: {e}");
+                        basic
+                    }
+                };
+                let _ = tx.send(text);
+            });
+        } else {
+            let _ = tx.send(text);
+        }
+
+        let this = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let text = rx.await.unwrap_or_default();
+            let typed = if this.own_window_focused() {
+                this.typist.end(id, live.shown.clone());
+                Err("this app's window has the focus".to_string())
+            } else {
+                this.typist
+                    .finish(id, text.clone())
+                    .await
+                    .unwrap_or_else(|_| Err("typing stopped unexpectedly".into()))
+            };
+            this.finish_live_dictation(transcript, text, typed);
+        });
+    }
+
+    /// Show a finished live dictation and copy its text to the clipboard.
+    fn finish_live_dictation(
+        self: &Rc<Self>,
+        transcript: Transcript,
+        text: String,
+        typed: Result<(), String>,
+    ) {
+        self.transcribing
+            .set(self.transcribing.get().saturating_sub(1));
+        if !self.recording.get() {
+            self.set_recording_ui(false, self.ready_text());
+        }
+        if text.is_empty() {
+            info!("No speech recognised");
+            self.notify(
+                "dictation",
+                "No speech recognised",
+                "Nothing was heard in the recording.",
+            );
+            return;
+        }
+
+        if let Some(ref win) = *self.window.borrow() {
+            win.add_transcript(transcript.clone(), text.clone());
+        }
+        self.history.borrow_mut().push((transcript, text.clone()));
+
+        let copy_text = text.clone();
+        self.ctx.rt.spawn_blocking(move || {
+            if let Err(e) = DictationService::copy_to_clipboard(&copy_text) {
+                warn!("Clipboard copy failed: {e}");
+            }
+        });
+        match typed {
+            Ok(()) => info!("Typed {} chars while dictating", text.len()),
+            Err(reason) => {
+                info!("Text left on the clipboard: {reason}");
+                self.notify(
+                    "dictation",
+                    "Dictated text is on the clipboard",
+                    &format!("Press Ctrl+V to paste it. It could not be typed: {reason}."),
+                );
+            }
+        }
     }
 
     // -- Feedback ------------------------------------------------------------

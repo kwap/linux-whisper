@@ -231,11 +231,24 @@ fn dictation_group(
         .subtitle("Insert the text where the cursor is. It is always copied to the clipboard too")
         .active(config.auto_paste)
         .build();
-    auto_paste_row.connect_active_notify(|row| {
+    group.add(&auto_paste_row);
+
+    let live_typing_row = adw::SwitchRow::builder()
+        .title("Type While You Speak")
+        .subtitle("Words appear at the cursor as you talk, and the last ones are corrected as recognition improves. Off: the text is inserted when you stop")
+        .active(config.live_typing)
+        .sensitive(config.auto_paste)
+        .build();
+    live_typing_row.connect_active_notify(|row| {
+        let active = row.is_active();
+        save(|c| c.live_typing = active);
+    });
+    group.add(&live_typing_row);
+    auto_paste_row.connect_active_notify(move |row| {
         let active = row.is_active();
         save(|c| c.auto_paste = active);
+        live_typing_row.set_sensitive(active);
     });
-    group.add(&auto_paste_row);
 
     let shortcuts = [
         (PasteShortcut::CtrlV, "Ctrl+V"),

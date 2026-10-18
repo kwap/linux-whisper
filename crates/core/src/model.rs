@@ -137,11 +137,42 @@ impl Transcript {
     }
 }
 
+/// The languages of `segments`, the one spoken longest first.
+pub fn languages_spoken(segments: &[Segment]) -> Vec<String> {
+    let mut spoken: Vec<(String, f64)> = Vec::new();
+    for segment in segments {
+        let Some(lang) = &segment.language else {
+            continue;
+        };
+        match spoken.iter_mut().find(|(l, _)| l == lang) {
+            Some((_, secs)) => *secs += segment.duration(),
+            None => spoken.push((lang.clone(), segment.duration())),
+        }
+    }
+    spoken.sort_by(|a, b| b.1.total_cmp(&a.1));
+    spoken.into_iter().map(|(lang, _)| lang).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // ───────────────────────── Segment tests ─────────────────────────
+
+    #[test]
+    fn the_language_spoken_longest_comes_first() {
+        let segment = |start, end, lang: &str| {
+            let mut segment = Segment::new(start, end, "text");
+            segment.language = Some(lang.to_string());
+            segment
+        };
+        let spoken = languages_spoken(&[
+            segment(0.0, 1.0, "en"),
+            segment(1.0, 4.0, "de"),
+            segment(4.0, 5.0, "en"),
+        ]);
+        assert_eq!(spoken, vec!["de".to_string(), "en".to_string()]);
+    }
 
     #[test]
     fn segment_new_creates_valid_segment() {

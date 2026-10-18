@@ -70,6 +70,10 @@ pub struct AppConfig {
     /// Whether to automatically paste transcribed text into the focused window.
     pub auto_paste: bool,
 
+    /// With `auto_paste`: whether the text is typed while it is spoken (and
+    /// corrected as recognition improves), rather than when recording stops.
+    pub live_typing: bool,
+
     /// Language code passed to the Whisper model (e.g. "en", "de", "auto").
     pub language: String,
 
@@ -107,6 +111,7 @@ impl Default for AppConfig {
             hotkey: "Super+Shift+Space".to_string(),
             block_hotkey_keys: true,
             auto_paste: true,
+            live_typing: true,
             language: "auto".to_string(),
             languages: Vec::new(),
             model: "base".to_string(),
@@ -286,6 +291,7 @@ mod tests {
         assert!(cfg.minimize_to_tray);
         assert!(!cfg.show_confidence);
         assert!(cfg.block_hotkey_keys);
+        assert!(cfg.live_typing);
         assert!(cfg.languages.is_empty());
     }
 
@@ -295,6 +301,7 @@ mod tests {
             hotkey: "Ctrl+Alt+R".to_string(),
             block_hotkey_keys: false,
             auto_paste: false,
+            live_typing: false,
             language: "de".to_string(),
             languages: vec!["pl".to_string(), "en".to_string()],
             model: "large".to_string(),

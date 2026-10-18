@@ -227,33 +227,39 @@ impl UinputPaster {
 impl TextInjector for UinputPaster {
     /// The text must already be on the clipboard.
     fn inject_text(&self, _text: &str) -> Result<(), InjectError> {
-        let (modifiers, key) = shortcut_keys(self.shortcut);
-        with_virtual_keyboard(|dev| {
-            let mut send = |code: KeyCode, value: i32| {
-                dev.emit(&[InputEvent::new(EventType::KEY.0, code.code(), value)])
-                    .map_err(|e| InjectError::InjectFailed(format!("virtual keyboard: {e}")))
-            };
-            let pressed = modifiers
-                .iter()
-                .try_for_each(|&m| send(m, 1))
-                .and_then(|()| {
-                    std::thread::sleep(Duration::from_millis(20));
-                    send(key, 1)
-                });
-            std::thread::sleep(Duration::from_millis(20));
-            // Always release everything, even after a failed press: the
-            // keyboard lives on, and a stuck Ctrl would affect all typing.
-            let released = std::iter::once(key)
-                .chain(modifiers.iter().rev().copied())
-                .map(|k| send(k, 0))
-                .fold(Ok(()), Result::and);
-            pressed.and(released)
-        })
+        with_virtual_keyboard(|dev| press_shortcut(dev, self.shortcut))
     }
 
     fn is_available(&self) -> bool {
         Self::is_permitted()
     }
+}
+
+/// Press the paste `shortcut` on the virtual keyboard.
+pub(crate) fn press_shortcut(
+    dev: &mut VirtualDevice,
+    shortcut: PasteShortcut,
+) -> Result<(), InjectError> {
+    let (modifiers, key) = shortcut_keys(shortcut);
+    let mut send = |code: KeyCode, value: i32| {
+        dev.emit(&[InputEvent::new(EventType::KEY.0, code.code(), value)])
+            .map_err(|e| InjectError::InjectFailed(format!("virtual keyboard: {e}")))
+    };
+    let pressed = modifiers
+        .iter()
+        .try_for_each(|&m| send(m, 1))
+        .and_then(|()| {
+            std::thread::sleep(Duration::from_millis(20));
+            send(key, 1)
+        });
+    std::thread::sleep(Duration::from_millis(20));
+    // Always release everything, even after a failed press: the keyboard
+    // lives on, and a stuck Ctrl would affect all typing.
+    let released = std::iter::once(key)
+        .chain(modifiers.iter().rev().copied())
+        .map(|k| send(k, 0))
+        .fold(Ok(()), Result::and);
+    pressed.and(released)
 }
 
 /// Modifier keys and key that make up a paste shortcut.
@@ -268,7 +274,7 @@ fn shortcut_keys(shortcut: PasteShortcut) -> (&'static [KeyCode], KeyCode) {
     }
 }
 
-fn with_virtual_keyboard<T>(
+pub(crate) fn with_virtual_keyboard<T>(
     f: impl FnOnce(&mut VirtualDevice) -> Result<T, InjectError>,
 ) -> Result<T, InjectError> {
     let mut guard = VIRTUAL_KEYBOARD
@@ -450,6 +456,27 @@ pub fn create_injector(display: &DisplayServer) -> Box<dyn TextInjector + Send> 
     }
 }
 
+/// For tests: the virtual keyboard, grabbed so that nothing typed on it
+/// reaches the desktop.
+#[cfg(test)]
+pub(crate) fn grab_own_virtual_keyboard() -> evdev::Device {
+    let name = "Linux Whisper paste keyboard";
+    let made_here = VIRTUAL_KEYBOARD.lock().is_ok_and(|k| k.is_some());
+    // Another one (a running Linux Whisper) would be grabbed instead, and the
+    // test's keys would reach the desktop.
+    assert!(
+        made_here || evdev::enumerate().all(|(_, d)| d.name() != Some(name)),
+        "quit Linux Whisper first: its virtual keyboard has the same name"
+    );
+    UinputPaster::prepare().expect("create the virtual keyboard");
+    let mut device = evdev::enumerate()
+        .map(|(_, d)| d)
+        .find(|d| d.name() == Some(name))
+        .expect("virtual keyboard listed in /dev/input");
+    device.grab().expect("grab the virtual keyboard");
+    device
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,12 +600,7 @@ mod tests {
     #[test]
     #[ignore]
     fn uinput_paster_presses_the_shortcut() {
-        UinputPaster::prepare().expect("create the virtual keyboard");
-        let mut device = evdev::enumerate()
-            .map(|(_, d)| d)
-            .find(|d| d.name() == Some("Linux Whisper paste keyboard"))
-            .expect("virtual keyboard listed in /dev/input");
-        device.grab().expect("grab the virtual keyboard");
+        let mut device = grab_own_virtual_keyboard();
 
         UinputPaster::new(PasteShortcut::CtrlShiftV)
             .inject_text("")

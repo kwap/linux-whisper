@@ -215,6 +215,25 @@ impl CpalCapture {
         Ok((raw_samples, self.device_sample_rate))
     }
 
+    /// Sample rate of the current or last recording.
+    pub fn sample_rate(&self) -> u32 {
+        self.device_sample_rate
+    }
+
+    /// Number of samples recorded so far.
+    pub fn recorded_len(&self) -> usize {
+        self.buffer.lock().map_or(0, |buf| buf.len())
+    }
+
+    /// The samples recorded so far from `start` on (mono, at
+    /// [`sample_rate`](Self::sample_rate)), while the recording goes on.
+    pub fn samples_from(&self, start: usize) -> Vec<f32> {
+        self.buffer
+            .lock()
+            .map(|buf| buf.get(start..).unwrap_or_default().to_vec())
+            .unwrap_or_default()
+    }
+
     /// Length of the recording so far, in seconds.
     pub fn recorded_secs(&self) -> f64 {
         let rate = self.device_sample_rate.max(1) as f64;

@@ -4,13 +4,14 @@
 //! whisper-rs inference and exposes an async interface via tokio channels.
 //! This keeps the tokio runtime free from blocking compute work.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use linux_whisper_audio::capture::AudioBuffer;
-use linux_whisper_core::model::{Segment, Transcript, TranscriptSource};
+use linux_whisper_core::model::{languages_spoken, Segment, Transcript, TranscriptSource};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
 use whisper_rs::{
@@ -33,6 +34,19 @@ pub enum WorkerCommand {
         options: TranscribeOptions,
         /// Channel to send the result back on.
         reply: oneshot::Sender<Result<Transcript, TranscribeError>>,
+    },
+    /// Transcribe the unfinished part of a recording that is still going on.
+    Live {
+        /// The audio since the end of the final text so far.
+        audio: AudioBuffer,
+        /// Transcription options (language, translate flag, etc.).
+        options: TranscribeOptions,
+        /// What is known about the recording before `audio`.
+        context: LiveContext,
+        /// The recording has ended: make all of `audio` final.
+        finish: bool,
+        /// Channel to send the result back on.
+        reply: oneshot::Sender<Result<LiveText, TranscribeError>>,
     },
     /// Load a whisper model from the given path.
     LoadModel {
@@ -118,6 +132,36 @@ impl WhisperWorker {
         })?
     }
 
+    /// Transcribes the unfinished part of a live recording: what was said
+    /// since the end of its final text (see [`LiveText`]). Call again with
+    /// more audio as the recording goes on, and with `finish` once it ends.
+    pub async fn transcribe_live(
+        &self,
+        audio: AudioBuffer,
+        options: TranscribeOptions,
+        context: LiveContext,
+        finish: bool,
+    ) -> Result<LiveText, TranscribeError> {
+        let (tx, rx) = oneshot::channel();
+
+        self.sender
+            .send(WorkerCommand::Live {
+                audio,
+                options,
+                context,
+                finish,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| {
+                TranscribeError::TranscriptionFailed("worker channel closed".to_string())
+            })?;
+
+        rx.await.map_err(|_| {
+            TranscribeError::TranscriptionFailed("worker dropped reply channel".to_string())
+        })?
+    }
+
     /// Sends a model-load command to the worker and awaits the result.
     pub async fn load_model(&self, path: PathBuf) -> Result<(), TranscribeError> {
         let (tx, rx) = oneshot::channel();
@@ -164,6 +208,9 @@ impl WhisperWorker {
 
         let mut ctx: Option<WhisperContext> = None;
         let mut model_name: String = String::new();
+        // Kept through a live recording: a new state per update would
+        // allocate the model's buffers several times a second.
+        let mut live_state: Option<WhisperState> = None;
 
         rt.block_on(async {
             while let Some(cmd) = rx.recv().await {
@@ -185,6 +232,39 @@ impl WhisperWorker {
                         };
 
                         let result = run_transcription(whisper_ctx, &audio, &options, &model_name);
+                        let _ = reply.send(result);
+                    }
+
+                    WorkerCommand::Live {
+                        audio,
+                        options,
+                        context,
+                        finish,
+                        reply,
+                    } => {
+                        let Some(ref whisper_ctx) = ctx else {
+                            let _ = reply.send(Err(TranscribeError::ModelNotLoaded));
+                            continue;
+                        };
+                        if live_state.is_none() {
+                            match whisper_ctx.create_state() {
+                                Ok(state) => live_state = Some(state),
+                                Err(e) => {
+                                    let _ = reply.send(Err(TranscribeError::TranscriptionFailed(
+                                        format!("create state: {e}"),
+                                    )));
+                                    continue;
+                                }
+                            }
+                        }
+                        let Some(ref mut state) = live_state else {
+                            continue;
+                        };
+                        let result =
+                            run_live(whisper_ctx, state, &audio, &options, context, finish);
+                        if finish {
+                            live_state = None;
+                        }
                         let _ = reply.send(result);
                     }
 
@@ -215,6 +295,7 @@ impl WhisperWorker {
                                     .to_string();
 
                                 info!("Model loaded: {} ({})", model_name, path.display());
+                                live_state = None;
                                 ctx = Some(new_ctx);
                                 if let Ok(mut loaded) = loaded_model.lock() {
                                     *loaded = Some(model_name.clone());
@@ -281,6 +362,15 @@ const DETECTION_WEIGHT: f32 = 0.05;
 /// get the detected language. On a GPU the limit is never reached.
 const MIN_CHECK_SECS: f64 = 5.0;
 
+/// Live dictation: unfinished speech longer than this is made final at its
+/// last pause, even one that does not end a sentence. A long guess is slow
+/// to redo, and any change near its start means erasing all that follows.
+const LIVE_LONG_GUESS_SECS: usize = 6;
+
+/// Live dictation: unfinished speech longer than this (no pause in it) is
+/// made final up to its last sentence.
+const LIVE_MAX_UNFINISHED_SECS: usize = 20;
+
 /// Whisper's own sign of made-up text: it thought there was no speech, and
 /// it is unsure of the words (the thresholds OpenAI's Whisper uses).
 const NO_SPEECH_PROBABILITY: f32 = 0.6;
@@ -293,46 +383,26 @@ fn run_transcription(
     options: &TranscribeOptions,
     model_name: &str,
 ) -> Result<Transcript, TranscribeError> {
-    // whisper.cpp defaults to at most 4 threads; more makes CPU-only
-    // transcription noticeably faster on desktop machines.
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(1, 8);
+    let threads = decode_threads();
     let rate = audio.sample_rate as usize;
-
-    // whisper.cpp ignores input shorter than one second, so a quick "yes"
-    // would come back empty. Pad short clips with silence.
-    let min_samples = rate * 11 / 10;
-    let padded;
-    let samples: &[f32] = if audio.samples.len() < min_samples {
-        let mut buf = audio.samples.clone();
-        buf.resize(min_samples, 0.0);
-        padded = buf;
-        &padded
-    } else {
-        &audio.samples
-    };
+    let samples = padded(&audio.samples, rate);
 
     let mut state = ctx
         .create_state()
         .map_err(|e| TranscribeError::TranscriptionFailed(format!("create state: {e}")))?;
 
-    // Segment text tokens have ids below end-of-text; timestamps and other
-    // special tokens come after it.
-    let eot = ctx.token_eot();
-
     // Decide which language to use for which part of the audio.
-    let spans = match &options.language {
-        Some(lang) => vec![(0..samples.len(), Some(lang.clone()))],
-        None if ctx.is_multilingual() => {
-            let allowed = language_ids(&options.languages);
-            language_spans(&mut state, samples, rate, threads, eot, &allowed)
-        }
-        // English-only models: auto-detecting would only cost time and report
-        // a meaningless language.
-        None => vec![(0..samples.len(), Some("en".to_string()))],
-    };
+    let spans = choose_spans(ctx, &mut state, &samples, rate, threads, options, 0.0);
+    let segments = decode_spans(
+        &mut state,
+        &samples,
+        rate,
+        threads,
+        ctx.token_eot(),
+        &spans,
+        options,
+        false,
+    )?;
 
     let mut transcript = Transcript::new(
         "Transcription",
@@ -341,12 +411,100 @@ fn run_transcription(
         TranscriptSource::Dictation,
     );
     transcript.duration = audio.samples.len() as f64 / rate as f64;
+    for segment in segments {
+        transcript.add_segment(segment);
+    }
 
-    let mut speech_per_language: Vec<(String, usize)> = Vec::new();
+    // Report the language spoken the most.
+    let languages = languages_spoken(&transcript.segments);
+    if transcript.language.is_none() {
+        transcript.language = languages.first().cloned();
+    }
 
-    for (range, language) in &spans {
+    info!(
+        "Whisper inference complete: {} segment(s), {:.1}s audio, language(s): {:?}",
+        transcript.segment_count(),
+        transcript.duration,
+        languages,
+    );
+
+    Ok(transcript)
+}
+
+/// whisper.cpp defaults to at most 4 threads; more makes CPU-only
+/// transcription noticeably faster on desktop machines.
+fn decode_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8)
+}
+
+/// whisper.cpp ignores input shorter than one second, so a quick "yes"
+/// would come back empty. Short clips are padded with silence.
+fn padded(samples: &[f32], rate: usize) -> Cow<'_, [f32]> {
+    let min_samples = rate * 11 / 10;
+    if samples.len() < min_samples {
+        let mut buf = samples.to_vec();
+        buf.resize(min_samples, 0.0);
+        Cow::Owned(buf)
+    } else {
+        Cow::Borrowed(samples)
+    }
+}
+
+/// Which language to use for which part of `samples`.
+fn choose_spans(
+    ctx: &WhisperContext,
+    state: &mut WhisperState,
+    samples: &[f32],
+    rate: usize,
+    threads: usize,
+    options: &TranscribeOptions,
+    loud: f32,
+) -> Vec<(Range<usize>, Option<String>)> {
+    match &options.language {
+        Some(lang) => vec![(0..samples.len(), Some(lang.clone()))],
+        None if ctx.is_multilingual() => {
+            let allowed = language_ids(&options.languages);
+            language_spans(
+                state,
+                samples,
+                rate,
+                threads,
+                ctx.token_eot(),
+                &allowed,
+                loud,
+            )
+        }
+        // English-only models: auto-detecting would only cost time and report
+        // a meaningless language.
+        None => vec![(0..samples.len(), Some("en".to_string()))],
+    }
+}
+
+/// Transcribe each span of `samples` in its language (`None`: whisper
+/// detects it). A `quick` reading (a live guess) takes whisper's first
+/// reading even when it is unsure of it: retrying at higher temperatures can
+/// take seconds, and the guess is read again moments later anyway.
+#[allow(clippy::too_many_arguments)]
+fn decode_spans(
+    state: &mut WhisperState,
+    samples: &[f32],
+    rate: usize,
+    threads: usize,
+    eot: i32,
+    spans: &[(Range<usize>, Option<String>)],
+    options: &TranscribeOptions,
+    quick: bool,
+) -> Result<Vec<Segment>, TranscribeError> {
+    let mut segments = Vec::new();
+    for (range, language) in spans {
         // `None` makes whisper.cpp detect the language itself.
-        let params = decode_params(threads, language.as_deref(), options.translate);
+        let mut params = decode_params(threads, language.as_deref(), options.translate);
+        if quick {
+            params.set_temperature_inc(0.0);
+        }
         state
             .full(params, &samples[range.clone()])
             .map_err(|e| TranscribeError::TranscriptionFailed(format!("inference failed: {e}")))?;
@@ -354,12 +512,6 @@ fn run_transcription(
         let used_language = language.clone().or_else(|| {
             whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string)
         });
-        if let Some(lang) = &used_language {
-            match speech_per_language.iter_mut().find(|(l, _)| l == lang) {
-                Some((_, len)) => *len += range.len(),
-                None => speech_per_language.push((lang.clone(), range.len())),
-            }
-        }
 
         let offset = range.start as f64 / rate as f64;
         for i in 0..state.full_n_segments() {
@@ -367,10 +519,10 @@ fn run_transcription(
                 continue;
             };
 
-            let text = seg.to_str_lossy().map_err(|e| {
+            let raw = seg.to_str_lossy().map_err(|e| {
                 TranscribeError::TranscriptionFailed(format!("failed to get segment {i} text: {e}"))
             })?;
-            let cleaned = strip_non_speech(&text);
+            let cleaned = strip_non_speech(&raw);
             if cleaned.is_empty() {
                 continue;
             }
@@ -399,29 +551,11 @@ fn run_transcription(
             segment.confidence =
                 (!probabilities.is_empty()).then(|| probabilities.iter().sum::<f32>() / count);
             segment.language = used_language.clone();
-            transcript.add_segment(segment);
+            segments.push(segment);
         }
     }
 
-    // Report the language spoken the most.
-    if transcript.language.is_none() {
-        transcript.language = speech_per_language
-            .iter()
-            .max_by_key(|(_, len)| *len)
-            .map(|(lang, _)| lang.clone());
-    }
-
-    info!(
-        "Whisper inference complete: {} segment(s), {:.1}s audio, language(s): {:?}",
-        transcript.segment_count(),
-        transcript.duration,
-        speech_per_language
-            .iter()
-            .map(|(l, _)| l.as_str())
-            .collect::<Vec<_>>(),
-    );
-
-    Ok(transcript)
+    Ok(segments)
 }
 
 /// Decoding parameters: greedy, each call independent of the previous one.
@@ -438,6 +572,286 @@ fn decode_params(threads: usize, language: Option<&str>, translate: bool) -> Ful
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params
+}
+
+// ---------------------------------------------------------------------------
+// Live transcription
+// ---------------------------------------------------------------------------
+
+/// What is known about a live recording before the audio sent next.
+#[derive(Debug, Clone, Default)]
+pub struct LiveContext {
+    /// The language the speaker was last heard in.
+    pub language: Option<String>,
+    /// The loudness of the speech so far (see `Loudness`), so that the quiet
+    /// after it is not taken for speech.
+    pub loud: f32,
+}
+
+impl LiveContext {
+    /// This context after `segments` were heard.
+    fn followed_by(&self, segments: &[Segment]) -> Self {
+        let mut next = self.clone();
+        if let Some(language) = segments.iter().rev().find_map(|s| s.language.clone()) {
+            next.language = Some(language);
+        }
+        next
+    }
+}
+
+/// The text of a live recording's unfinished audio.
+#[derive(Debug, Clone, Default)]
+pub struct LiveText {
+    /// How many samples at the start of the audio now have their final text.
+    /// The next request starts after them.
+    pub done: usize,
+    /// The final text of those samples, timed from the start of the audio.
+    pub done_segments: Vec<Segment>,
+    /// The best guess at the rest, which may change as more is said.
+    pub guess: Vec<Segment>,
+    /// The context for the next request.
+    pub context: LiveContext,
+}
+
+/// Transcribe a live recording's unfinished audio. All of it is read as a
+/// guess, which the next update reads again with more audio. A pause where
+/// the guess ends a sentence makes everything before it final: that part is
+/// transcribed again as a recording of its own (languages and all) and not
+/// looked at again.
+fn run_live(
+    ctx: &WhisperContext,
+    state: &mut WhisperState,
+    audio: &AudioBuffer,
+    options: &TranscribeOptions,
+    before: LiveContext,
+    finish: bool,
+) -> Result<LiveText, TranscribeError> {
+    let threads = decode_threads();
+    let rate = audio.sample_rate as usize;
+    let samples = &audio.samples[..];
+    let len = samples.len();
+    let eot = ctx.token_eot();
+    let loudness = Loudness::new(samples, rate, before.loud);
+    let before = LiveContext {
+        loud: loudness.loud,
+        ..before
+    };
+    let loud = before.loud;
+    let finished = |state: &mut WhisperState, end: usize| {
+        let part = padded(&samples[..end], rate);
+        let spans = choose_spans(ctx, state, &part, rate, threads, options, loud);
+        decode_spans(state, &part, rate, threads, eot, &spans, options, false)
+    };
+
+    let has_speech = loudness.speech_ms(&(0..len)) >= MIN_SPEECH_MS;
+    if finish {
+        let done_segments = if has_speech {
+            finished(state, len)?
+        } else {
+            Vec::new()
+        };
+        return Ok(LiveText {
+            done: len,
+            context: before.followed_by(&done_segments),
+            done_segments,
+            guess: Vec::new(),
+        });
+    }
+    if !has_speech {
+        // Quiet so far: no need to send it again, except its very end, where
+        // speech may be starting.
+        return Ok(LiveText {
+            done: if len > rate { len - rate / 2 } else { 0 },
+            context: before,
+            ..LiveText::default()
+        });
+    }
+
+    let unfinished = padded(samples, rate);
+    let language = guess_language(ctx, state, &unfinished, rate, threads, options, &before);
+    let spans = [(0..unfinished.len(), language)];
+    let mut guess = decode_spans(
+        state,
+        &unfinished,
+        rate,
+        threads,
+        eot,
+        &spans,
+        options,
+        true,
+    )?;
+    // A quick reading can get stuck repeating itself; that would be typed.
+    if runs_away(&guess, len as f64 / rate as f64) {
+        debug!("Quick reading ran away; reading again");
+        guess = decode_spans(
+            state,
+            &unfinished,
+            rate,
+            threads,
+            eot,
+            &spans,
+            options,
+            false,
+        )?;
+    }
+    let heard = before.followed_by(&guess);
+
+    // A pause after the end of a sentence finishes it. Once the guess is
+    // long, so does any pause; speech without pauses is finished up to its
+    // last sentence. A long guess is slow to redo, and a change near its
+    // start means erasing all that follows.
+    let pauses = phrase_ends(&loudness, len);
+    let too_long = len > LIVE_MAX_UNFINISHED_SECS * rate;
+    let sentence_end = pauses
+        .iter()
+        .rev()
+        .find(|pause| ends_sentence(&guess, pause, rate))
+        .or(pauses.last().filter(|_| len > LIVE_LONG_GUESS_SECS * rate));
+    // While the speaker is still talking, the full stop whisper puts at the
+    // end of the audio is not the end of a sentence; typing it would only
+    // mean erasing it again.
+    let talking = loudness.speech_ms(&(len.saturating_sub(rate * 3 / 10)..len)) >= 100;
+    if talking {
+        if let Some(last) = guess.last_mut() {
+            let kept = last.text.trim_end_matches(['.', ',', '!', '?', '…']).len();
+            last.text.truncate(kept);
+        }
+    }
+
+    if let Some(pause) = sentence_end {
+        let done = (pause.start + pause.end) / 2;
+        let done_segments = finished(state, done)?;
+        guess.retain(|s| s.start * rate as f64 >= pause.start as f64);
+        return Ok(LiveText {
+            done,
+            context: heard.followed_by(&done_segments).followed_by(&guess),
+            done_segments,
+            guess,
+        });
+    }
+    if too_long && guess.len() > 1 {
+        let last = guess.split_off(guess.len() - 1);
+        return Ok(LiveText {
+            done: ((last[0].start * rate as f64) as usize).min(len),
+            done_segments: guess,
+            guess: last,
+            context: heard,
+        });
+    }
+
+    Ok(LiveText {
+        done: 0,
+        done_segments: Vec::new(),
+        guess,
+        context: heard,
+    })
+}
+
+/// More text than anyone says in this time: whisper is repeating itself.
+fn runs_away(segments: &[Segment], secs: f64) -> bool {
+    let chars: usize = segments.iter().map(|s| s.text.chars().count()).sum();
+    chars as f64 > 30.0 + 30.0 * secs
+}
+
+/// How far whisper's timestamps may be from the pause they belong to.
+const TIMESTAMP_SLACK_SECS: f64 = 0.6;
+
+/// Whether the guess ends a sentence at `pause` (samples).
+fn ends_sentence(guess: &[Segment], pause: &Range<usize>, rate: usize) -> bool {
+    let (start, end) = (
+        pause.start as f64 / rate as f64 - TIMESTAMP_SLACK_SECS,
+        pause.end as f64 / rate as f64 + TIMESTAMP_SLACK_SECS,
+    );
+    guess.iter().any(|segment| {
+        (start..=end).contains(&segment.end)
+            && segment
+                .text
+                .trim_end()
+                .ends_with(['.', '!', '?', '…', '。', '！', '？'])
+    })
+}
+
+/// The pauses in live audio that may end a phrase (in samples): long enough,
+/// and after enough speech to tell its language. A pause still going on is
+/// not one yet: where its middle is, and so where the audio is cut, depends
+/// on how long it turns out to be.
+fn phrase_ends(loudness: &Loudness, len: usize) -> Vec<Range<usize>> {
+    let min_pause = MIN_PAUSE_MS / Loudness::FRAME_MS;
+    let min_phrase = MIN_PART_MS / Loudness::FRAME_MS;
+    let min_speech = MIN_SPEECH_MS / Loudness::FRAME_MS;
+    let samples = |frame: usize| (frame * loudness.frame).min(len);
+
+    let mut pauses = Vec::new();
+    let mut first_speech: Option<usize> = None;
+    let mut speech_frames = 0;
+    let mut quiet_since: Option<usize> = None;
+    let mut consider = |start: usize, stop: usize, speech: usize, first: Option<usize>| {
+        if first.is_some_and(|first| start - first >= min_phrase)
+            && stop - start >= min_pause
+            && speech >= min_speech
+        {
+            pauses.push(samples(start)..samples(stop));
+        }
+    };
+    for (i, &level) in loudness.levels.iter().enumerate() {
+        if level < loudness.quiet {
+            quiet_since.get_or_insert(i);
+        } else {
+            if let Some(start) = quiet_since.take() {
+                consider(start, i, speech_frames, first_speech);
+            }
+            first_speech.get_or_insert(i);
+            speech_frames += 1;
+        }
+    }
+    pauses
+}
+
+/// The language to read unfinished live speech in. The language of the text
+/// before is kept unless detection is sure of another one, so the guess does
+/// not jump between languages mid-sentence (an accent makes detection
+/// waver); the final reading at the next pause tries the likely languages
+/// properly.
+fn guess_language(
+    ctx: &WhisperContext,
+    state: &mut WhisperState,
+    samples: &[f32],
+    rate: usize,
+    threads: usize,
+    options: &TranscribeOptions,
+    before: &LiveContext,
+) -> Option<String> {
+    if options.language.is_some() {
+        return options.language.clone();
+    }
+    if !ctx.is_multilingual() {
+        return Some("en".to_string());
+    }
+    let name = |id: i32| whisper_rs::get_lang_str(id).map(str::to_string);
+    let allowed = language_ids(&options.languages);
+    if let [only] = allowed[..] {
+        return name(only);
+    }
+
+    let previous = before.language.as_deref().and_then(whisper_rs::get_lang_id);
+    // Too little to tell yet.
+    if previous.is_some() && samples.len() < rate * MIN_PART_MS / 1000 {
+        return before.language.clone();
+    }
+    let probabilities = detect_language(state, samples, threads)?;
+    let ranked = rank(&probabilities, &allowed);
+    let &(top, top_probability) = ranked.first()?;
+    match previous {
+        Some(previous)
+            if top_probability < SURE_LANGUAGE_PROBABILITY
+                && ranked
+                    .iter()
+                    .any(|&(id, p)| id == previous && p >= MIN_CANDIDATE_PROBABILITY) =>
+        {
+            name(previous)
+        }
+        _ => name(top),
+    }
 }
 
 /// Whisper's ids of the given language codes; unknown codes are left out.
@@ -460,6 +874,7 @@ fn language_spans(
     threads: usize,
     eot: i32,
     allowed: &[i32],
+    loud: f32,
 ) -> Vec<(Range<usize>, Option<String>)> {
     let name = |id: i32| whisper_rs::get_lang_str(id).map(str::to_string);
     if let [only] = allowed {
@@ -468,7 +883,7 @@ fn language_spans(
 
     let checks_until = Instant::now()
         + Duration::from_secs_f64((samples.len() as f64 / rate as f64).max(MIN_CHECK_SECS));
-    let loudness = Loudness::new(samples, rate);
+    let loudness = Loudness::new(samples, rate, loud);
     let max_merge = if samples.len() > LONG_AUDIO_SECS * rate {
         LONG_AUDIO_PART_SECS * rate
     } else {
@@ -692,6 +1107,8 @@ fn detect_language(state: &mut WhisperState, samples: &[f32], threads: usize) ->
 /// counts as quiet: well below the loud parts of this recording.
 struct Loudness {
     levels: Vec<f32>,
+    /// The level of the loud parts.
+    loud: f32,
     quiet: f32,
     frame: usize,
 }
@@ -699,7 +1116,10 @@ struct Loudness {
 impl Loudness {
     const FRAME_MS: usize = 20;
 
-    fn new(samples: &[f32], rate: usize) -> Self {
+    /// `at_least` is the level of loud parts heard before, for audio that
+    /// continues a recording: without it, the quiet after speech would be
+    /// measured against itself and taken for speech.
+    fn new(samples: &[f32], rate: usize, at_least: f32) -> Self {
         let frame = (rate * Self::FRAME_MS / 1000).max(1);
         let levels: Vec<f32> = samples
             .chunks(frame)
@@ -710,9 +1130,11 @@ impl Loudness {
         let loud = sorted
             .get((sorted.len() * 95 / 100).min(sorted.len().saturating_sub(1)))
             .copied()
-            .unwrap_or(0.0);
+            .unwrap_or(0.0)
+            .max(at_least);
         Self {
             levels,
+            loud,
             // About -60 dBFS: quieter than any microphone carrying speech.
             quiet: (loud * 0.1).max(0.001),
             frame,
@@ -827,7 +1249,7 @@ mod tests {
     }
 
     fn split(audio: &[f32], max_merge: usize) -> Vec<Range<usize>> {
-        split_at_pauses(&Loudness::new(audio, 16_000), audio.len(), max_merge)
+        split_at_pauses(&Loudness::new(audio, 16_000, 0.0), audio.len(), max_merge)
     }
 
     #[test]
@@ -870,7 +1292,7 @@ mod tests {
             .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
             .collect();
         let audio = [silence(1.0), click, silence(1.0), tone(2.0)].concat();
-        let loudness = Loudness::new(&audio, 16_000);
+        let loudness = Loudness::new(&audio, 16_000, 0.0);
         assert!(loudness.speech_ms(&(0..32_000)) < MIN_SPEECH_MS);
         assert!(loudness.speech_ms(&(32_000..audio.len())) >= 1900);
     }
@@ -878,8 +1300,91 @@ mod tests {
     #[test]
     fn silence_is_not_speech() {
         let audio = silence(3.0);
-        let loudness = Loudness::new(&audio, 16_000);
+        let loudness = Loudness::new(&audio, 16_000, 0.0);
         assert_eq!(loudness.speech_ms(&(0..audio.len())), 0);
+    }
+
+    fn pauses_secs(audio: &[f32]) -> Vec<(f32, f32)> {
+        phrase_ends(&Loudness::new(audio, 16_000, 0.0), audio.len())
+            .iter()
+            .map(|p| (p.start as f32 / 16_000.0, p.end as f32 / 16_000.0))
+            .collect()
+    }
+
+    #[test]
+    fn a_pause_after_a_phrase_may_end_it() {
+        let audio = [tone(2.0), silence(0.8), tone(1.0)].concat();
+        assert_eq!(pauses_secs(&audio), vec![(2.0, 2.8)]);
+        // Not while it is still going on.
+        assert!(pauses_secs(&[tone(2.0), silence(0.6)].concat()).is_empty());
+        let audio = [tone(2.0), silence(0.6), tone(2.0), silence(0.6), tone(0.5)].concat();
+        assert_eq!(pauses_secs(&audio).len(), 2);
+    }
+
+    #[test]
+    fn short_gaps_and_short_phrases_end_nothing() {
+        assert!(pauses_secs(&tone(5.0)).is_empty());
+        assert!(pauses_secs(&[tone(2.0), silence(0.3), tone(1.0)].concat()).is_empty());
+        // Quiet before any speech.
+        assert!(pauses_secs(&[silence(2.0), tone(1.0)].concat()).is_empty());
+        // Too little to tell the language of.
+        assert!(pauses_secs(&[tone(0.8), silence(1.4), tone(1.0)].concat()).is_empty());
+    }
+
+    #[test]
+    fn a_sentence_ends_where_whisper_put_a_full_stop_by_the_pause() {
+        let pause = 32_000..44_800;
+        let said = |end: f64, text: &str| {
+            vec![
+                Segment::new(0.0, end, text),
+                Segment::new(2.9, 4.0, "and more"),
+            ]
+        };
+        assert!(ends_sentence(&said(2.1, "Hello there."), &pause, 16_000));
+        assert!(ends_sentence(&said(3.2, "Is it?"), &pause, 16_000));
+        assert!(!ends_sentence(
+            &said(2.1, "I would like to"),
+            &pause,
+            16_000
+        ));
+        assert!(!ends_sentence(&said(1.0, "Hello."), &pause, 16_000));
+    }
+
+    #[test]
+    fn a_reading_far_longer_than_speech_runs_away() {
+        let said = |text: &str| vec![Segment::new(0.0, 2.0, text)];
+        assert!(!runs_away(
+            &said("Hello, I am testing the new dictation app."),
+            2.0
+        ));
+        assert!(runs_away(&said(&"the ".repeat(40)), 2.0));
+    }
+
+    #[test]
+    fn quiet_after_speech_is_not_speech() {
+        let noise: Vec<f32> = (0..16_000)
+            .map(|i| if i % 2 == 0 { 0.01 } else { -0.01 })
+            .collect();
+        let alone = Loudness::new(&noise, 16_000, 0.0);
+        assert!(alone.speech_ms(&(0..noise.len())) > 900);
+        let after_speech = Loudness::new(&noise, 16_000, 0.3);
+        assert_eq!(after_speech.speech_ms(&(0..noise.len())), 0);
+    }
+
+    fn segment_in(start: f64, end: f64, text: &str, language: &str) -> Segment {
+        let mut segment = Segment::new(start, end, text);
+        segment.language = Some(language.to_string());
+        segment
+    }
+
+    #[test]
+    fn live_context_follows_the_last_language_heard() {
+        let context = LiveContext::default().followed_by(&[
+            segment_in(0.0, 1.0, "Hello.", "en"),
+            segment_in(1.0, 2.0, "Cześć.", "pl"),
+        ]);
+        assert_eq!(context.language.as_deref(), Some("pl"));
+        assert_eq!(context.followed_by(&[]).language.as_deref(), Some("pl"));
     }
 
     #[test]
