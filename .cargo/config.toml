@@ -1,0 +1,6 @@
+[env]
+# whisper-rs-sys otherwise runs bindgen against the system libclang. A missing
+# libclang fails the build, and recent ones (22 on Fedora 44) make bindgen 0.71
+# emit broken struct layouts. The bindings shipped with whisper-rs-sys match its
+# bundled whisper.cpp, so use those everywhere.
+WHISPER_DONT_GENERATE_BINDINGS = "1"

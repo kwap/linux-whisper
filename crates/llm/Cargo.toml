@@ -4,8 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["cuda"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+default = []
+# Run the formatter on an NVIDIA GPU (needs NVRTC and cuRAND besides the
+# CUDA toolkit). Not called `cuda`, so that `--features cuda` at the workspace
+# root only enables GPU speech recognition.
+gpu = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dependencies]
 linux-whisper-core = { workspace = true }
@@ -16,7 +19,7 @@ candle-core = "0.9"
 candle-nn = "0.9"
 candle-transformers = "0.9"
 tokenizers = "0.21"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2", "charset"] }
 sha2 = "0.10"
 hex = "0.4"
 futures-util = "0.3"

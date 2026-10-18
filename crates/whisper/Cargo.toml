@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["cuda"]
+default = []
 cuda = ["whisper-rs/cuda"]
 
 [dependencies]
@@ -14,12 +14,13 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 whisper-rs = "0.15"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2", "charset"] }
 sha2 = "0.10"
 hex = "0.4"
 futures-util = "0.3"
 
 [dev-dependencies]
 mockall = { workspace = true }
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"

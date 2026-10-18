@@ -8,8 +8,12 @@ name = "linux-whisper"
 path = "src/main.rs"
 
 [features]
-default = ["cuda"]
-cuda = ["linux-whisper-whisper/cuda", "linux-whisper-llm/cuda"]
+default = []
+# NVIDIA GPU acceleration for speech recognition. Needs the CUDA toolkit
+# (nvcc, cudart, cuBLAS) at build time.
+cuda = ["linux-whisper-whisper/cuda"]
+# Also run the optional AI formatter on the GPU. Needs NVRTC and cuRAND too.
+llm-cuda = ["linux-whisper-llm/gpu"]
 
 [dependencies]
 linux-whisper-core = { workspace = true }
