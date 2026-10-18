@@ -45,12 +45,12 @@ jobs:
           restore-keys: ${{ runner.os }}-release-
 
       - name: Build release binary
-        run: cargo build --workspace --release --no-default-features
+        run: cargo build --workspace --release --locked
 
       - name: Run tests
         run: |
-          cargo test --workspace --lib --no-default-features
-          cargo test --bin linux-whisper -p linux-whisper-app --no-default-features
+          cargo test --workspace --lib --locked
+          cargo test --bin linux-whisper -p linux-whisper-app --locked
 
       - name: Extract version
         id: version
@@ -67,6 +67,8 @@ jobs:
           mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps"
           mkdir -p "${PKG_DIR}/usr/share/glib-2.0/schemas"
           mkdir -p "${PKG_DIR}/usr/share/metainfo"
+          mkdir -p "${PKG_DIR}/usr/lib/udev/rules.d"
+          mkdir -p "${PKG_DIR}/usr/share/doc/linux-whisper"
 
           # Binary
           cp target/release/linux-whisper "${PKG_DIR}/usr/bin/"
@@ -79,6 +81,8 @@ jobs:
           cp "data/icons/${APP_ID}-symbolic.svg" "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps/"
           cp "data/${APP_ID}.gschema.xml" "${PKG_DIR}/usr/share/glib-2.0/schemas/"
           cp "data/${APP_ID}.metainfo.xml" "${PKG_DIR}/usr/share/metainfo/"
+          cp data/60-linux-whisper-uinput.rules "${PKG_DIR}/usr/lib/udev/rules.d/"
+          cp LICENSE "${PKG_DIR}/usr/share/doc/linux-whisper/copyright"
 
           # Control file
           INSTALLED_SIZE=$(du -sk "${PKG_DIR}/usr" | cut -f1)
@@ -90,14 +94,14 @@ jobs:
           Architecture: amd64
           Installed-Size: ${INSTALLED_SIZE}
           Depends: libgtk-4-1 (>= 4.10), libadwaita-1-0 (>= 1.5), libasound2
-          Recommends: wtype, wl-clipboard
+          Recommends: wl-clipboard, xdotool, wtype
           Maintainer: Piotr Kwapin <piotr@kwapin.com>
           Description: Local speech-to-text transcription and dictation for Linux
            Linux Whisper provides local, privacy-focused speech-to-text using
            OpenAI's Whisper models. All processing happens on your device.
            Features system-wide hotkey dictation, audio file transcription,
-           export to TXT/SRT/VTT/CSV, and CUDA GPU acceleration.
-          Homepage: https://github.com/piotrkwapin/linux-whisper
+           export to TXT/SRT/VTT/CSV.
+          Homepage: https://kwap.io/linux-whisper/
           CTRL
           # Remove leading spaces from heredoc (dpkg requires no leading whitespace in field names)
           sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
@@ -108,6 +112,9 @@ jobs:
           set -e
           glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null || true
           gtk-update-icon-cache /usr/share/icons/hicolor/ 2>/dev/null || true
+          # Give the desktop user access to /dev/uinput (pasting on GNOME/KDE).
+          udevadm control --reload-rules 2>/dev/null || true
+          udevadm trigger --name-match=uinput 2>/dev/null || true
           POSTINST
           sed -i 's/^          //' "${PKG_DIR}/DEBIAN/postinst"
           chmod 755 "${PKG_DIR}/DEBIAN/postinst"
@@ -150,7 +157,7 @@ jobs:
           restore-keys: ${{ runner.os }}-release-
 
       - name: Build release binary
-        run: cargo build --workspace --release --no-default-features
+        run: cargo build --workspace --release --locked
 
       - name: Extract version
         id: version
@@ -163,7 +170,8 @@ jobs:
           mkdir -p "${DIR}"
           cp target/release/linux-whisper "${DIR}/"
           strip "${DIR}/linux-whisper"
-          cp README.md LICENSE "${DIR}/" 2>/dev/null || true
+          cp README.md LICENSE "${DIR}/"
+          cp build-aux/install.sh "${DIR}/install.sh"
           cp -r data "${DIR}/"
           tar czf "${DIR}.tar.gz" "${DIR}"
 

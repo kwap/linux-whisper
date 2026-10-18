@@ -1,0 +1,4 @@
+# Linux Whisper pastes dictated text on GNOME and KDE (Wayland) by pressing
+# the paste shortcut on a virtual keyboard. That needs /dev/uinput; this rule
+# gives the logged-in desktop user access to it (the same rule Steam uses).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

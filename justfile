@@ -12,9 +12,13 @@ default:
 build:
     cargo build --workspace
 
-# Build optimised release binary
+# Build optimised release binary (CPU)
 release:
-    cargo build --workspace --release
+    cargo build --release -p linux-whisper-app
+
+# Build optimised release binary with NVIDIA GPU acceleration (needs the CUDA toolkit)
+release-cuda:
+    cargo build --release -p linux-whisper-app --features cuda
 
 # Run the app (debug build)
 run:
@@ -48,25 +52,27 @@ fmt:
 # Run clippy + fmt check (CI-style)
 check: lint fmt-check
 
-# Install the app to prefix (default /usr/local)
-install: release
-    install -Dm755 target/release/linux-whisper "{{prefix}}/bin/linux-whisper"
-    install -Dm644 data/{{app_id}}.desktop "{{prefix}}/share/applications/{{app_id}}.desktop"
-    install -Dm644 data/icons/{{app_id}}.svg "{{prefix}}/share/icons/hicolor/scalable/apps/{{app_id}}.svg"
-    install -Dm644 data/icons/{{app_id}}-symbolic.svg "{{prefix}}/share/icons/hicolor/symbolic/apps/{{app_id}}-symbolic.svg"
-    install -Dm644 data/{{app_id}}.gschema.xml "{{prefix}}/share/glib-2.0/schemas/{{app_id}}.gschema.xml"
-    install -Dm644 data/{{app_id}}.metainfo.xml "{{prefix}}/share/metainfo/{{app_id}}.metainfo.xml"
-    glib-compile-schemas "{{prefix}}/share/glib-2.0/schemas/" || true
-    gtk-update-icon-cache "{{prefix}}/share/icons/hicolor/" || true
+# Build first with `just release` or `just release-cuda` (not as root).
+# Install the release build to prefix (default /usr/local); asks for sudo when needed
+install:
+    ./build-aux/install.sh "{{prefix}}"
 
 # Uninstall the app
 uninstall:
-    rm -f "{{prefix}}/bin/linux-whisper"
-    rm -f "{{prefix}}/share/applications/{{app_id}}.desktop"
-    rm -f "{{prefix}}/share/icons/hicolor/scalable/apps/{{app_id}}.svg"
-    rm -f "{{prefix}}/share/icons/hicolor/symbolic/apps/{{app_id}}-symbolic.svg"
-    rm -f "{{prefix}}/share/glib-2.0/schemas/{{app_id}}.gschema.xml"
-    rm -f "{{prefix}}/share/metainfo/{{app_id}}.metainfo.xml"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sudo=""; [ -w "{{prefix}}/bin" ] || sudo=sudo
+    $sudo rm -f "{{prefix}}/bin/linux-whisper" \
+        "{{prefix}}/share/applications/{{app_id}}.desktop" \
+        "{{prefix}}/share/icons/hicolor/scalable/apps/{{app_id}}.svg" \
+        "{{prefix}}/share/icons/hicolor/symbolic/apps/{{app_id}}-symbolic.svg" \
+        "{{prefix}}/share/glib-2.0/schemas/{{app_id}}.gschema.xml" \
+        "{{prefix}}/share/metainfo/{{app_id}}.metainfo.xml"
+    sudo rm -f /etc/udev/rules.d/60-linux-whisper-uinput.rules
+
+# Check the virtual paste keyboard against the real kernel (needs /dev/uinput access)
+test-uinput:
+    cargo test -p linux-whisper-platform --lib -- --ignored uinput
 
 # Clean all build artifacts
 clean:
