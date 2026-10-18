@@ -247,7 +247,7 @@
   <section class="hero">
     <div class="tagrow">
       <h1 class="name">Linux Whisper</h1>
-      <p class="roles">v0.9.6 · Rust · GPLv3</p>
+      <p class="roles">v0.9.7 · Rust · GPLv3</p>
     </div>
     <div class="duo">
       <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><polygon points="155,8 120,35 150,55" fill="#a0d8bc"/><polygon points="155,8 190,28 150,55" fill="#8ecaae"/><polygon points="120,35 150,55 105,68" fill="#68b294"/><polygon points="150,55 190,28 182,60" fill="#78bca0"/><polygon points="190,28 215,38 192,55" fill="#d8ca8a"/><polygon points="105,68 150,55 182,60 180,98 95,90" fill="#56a08e"/><polygon points="95,90 180,98 115,148" fill="#6a9eaa"/><polygon points="95,90 50,130 115,148" fill="#7aa2bc"/><polygon points="50,130 18,185 80,190 115,148" fill="#84acc4"/><polygon points="180,98 182,60 185,150" fill="#589288"/><polygon points="180,98 185,150 115,148" fill="#6a9e98"/><polygon points="115,148 80,190 130,210" fill="#b2a6c2"/><polygon points="115,148 185,150 170,198 130,210" fill="#bfb0ca"/><polygon points="100,208 88,248 112,218" fill="#d8ca8a"/><polygon points="125,210 120,248 142,218" fill="#d8ca8a"/><circle cx="164" cy="42" r="4" fill="#1a1a1a"/></svg>
@@ -282,7 +282,7 @@
       <article><b>1</b><h3>Press a key.</h3><p>One hotkey starts dictation. It works in every app.</p></article>
       <article><b>2</b><h3>Speak.</h3><p>Talk the way you normally do. Your voice is recorded on your own computer.</p></article>
       <article><b>3</b><h3>It listens.</h3><p>Whisper turns your speech into text, on your computer.</p></article>
-      <article><b>4</b><h3>It types.</h3><p>The text is pasted where your cursor is.</p></article>
+      <article><b>4</b><h3>It types.</h3><p>Your words appear where your cursor is while you speak.</p></article>
     </div>
     <p>The speech recognition is done by <a href="https://github.com/ggerganov/whisper.cpp">whisper.cpp</a>. Nothing leaves your computer.</p>
   </section>
@@ -290,12 +290,12 @@
   <section id="features">
     <h2><span>02</span>Features</h2>
     <div class="entries">
-      <article><h3>Dictation in any app</h3><p>Press the hotkey anywhere and speak. The text is pasted into the window you are working in.</p></article>
+      <article><h3>Dictation in any app</h3><p>Press your shortcut anywhere and speak. Your words appear in the window you are working in as you talk, like dictation on a phone, and the last few are corrected as it hears more. The shortcut's own keys are kept out of it.</p></article>
       <article><h3>Audio files</h3><p>Open a WAV, MP3, OGG, M4A, OPUS, FLAC or MP4 file and get a transcript with time stamps that you can search.</p></article>
       <article><h3>Export</h3><p>Save a transcript as TXT, SRT, VTT or CSV: plain text for notes, subtitles for video, a table for analysis.</p></article>
-      <article><h3>50+ languages</h3><p>The language is detected by itself, with nothing to set up. You can switch language in the middle of a sentence.</p></article>
+      <article><h3>50+ languages</h3><p>The language is detected again for each sentence, so you can switch language from one sentence to the next. Tell it which languages you speak and it gets them right even with an accent.</p></article>
       <article><h3>Tidy text</h3><p>Paragraphs, capital letters and punctuation are cleaned up for you. If you turn it on, a language model on your own computer polishes the text further.</p></article>
-      <article><h3>Faster with NVIDIA</h3><p>An NVIDIA graphics card speeds up transcription (CUDA). Without one, the processor does the work.</p></article>
+      <article><h3>Faster with NVIDIA</h3><p>An NVIDIA graphics card speeds up transcription (CUDA) when you build Linux Whisper with GPU support. Without one, the processor does the work.</p></article>
       <article><h3>Private</h3><p>Everything is processed on your computer. No account, no telemetry, no cloud.</p></article>
     </div>
   </section>
@@ -309,43 +309,44 @@
       <li>Arch Linux</li>
       <li>Debian 13+</li>
     </ul>
-    <p>On Wayland and on X11.</p>
+    <p>On Wayland and on X11: GNOME, KDE Plasma, Sway and other desktops.</p>
   </section>
 
   <section id="prerequisites">
     <h2><span>04</span>Before you install</h2>
-    <p>Install what Linux Whisper needs. Pick the block for your system.</p>
+    <p>Install what Linux Whisper needs. Pick the block for your system. Building needs Rust 1.89 or newer.</p>
 
     <h4>Ubuntu, Pop!_OS, Debian</h4>
-<pre># Build tools, and the GTK4 and libadwaita libraries
-sudo apt install build-essential cmake libgtk-4-dev libadwaita-1-dev
+<pre># Build tools, and the GTK4, libadwaita and sound libraries
+sudo apt install build-essential cmake pkg-config git curl \
+  libgtk-4-dev libadwaita-1-dev libasound2-dev
 
-# Sound recording (ALSA)
-sudo apt install libasound2-dev
+# Pasting the text
+sudo apt install wl-clipboard xdotool wtype
 
-# Pasting the text on Wayland
-sudo apt install wtype wl-clipboard
-
-# The hotkey: add yourself to the "input" group, then restart the computer
+# The hotkey: add yourself to the "input" group, then log out and back in
 sudo usermod -aG input $USER
 
-# Rust, if you do not have it yet
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</pre>
+# Rust (the version in apt is too old)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"</pre>
 
     <h4>Fedora</h4>
-<pre>sudo dnf install gcc cmake gtk4-devel libadwaita-devel alsa-lib-devel wtype wl-clipboard
-sudo usermod -aG input $USER</pre>
+<pre>sudo dnf install gcc gcc-c++ cmake pkgconf-pkg-config git rust cargo \
+  gtk4-devel libadwaita-devel alsa-lib-devel wl-clipboard xdotool wtype
+sudo usermod -aG input $USER    # then log out and back in</pre>
 
     <h4>Arch Linux</h4>
-<pre>sudo pacman -S base-devel cmake gtk4 libadwaita alsa-lib wtype wl-clipboard
-sudo usermod -aG input $USER</pre>
+<pre>sudo pacman -S --needed base-devel cmake git rust gtk4 libadwaita alsa-lib \
+  wl-clipboard xdotool wtype
+sudo usermod -aG input $USER    # then log out and back in</pre>
   </section>
 
   <section id="installation">
     <h2><span>05</span>Install</h2>
 
     <h3>A ready-made package</h3>
-    <p>Download the latest <code>.deb</code> package or the tarball from the releases page.</p>
+    <p>Download the latest <code>.deb</code> package or the tarball from the releases page. These run on the processor; for an NVIDIA graphics card, build from the source. From the tarball, run <code>./install.sh</code> in the extracted folder.</p>
     <p><a class="box full" href="https://github.com/kwap/linux-whisper/releases/latest">Latest release →</a></p>
 
     <h3>From the source</h3>
@@ -354,36 +355,35 @@ sudo usermod -aG input $USER</pre>
 cd linux-whisper
 cargo build --release</pre>
 
-    <p>Install it for everyone on the computer:</p>
-<pre># The program
-sudo cp target/release/linux-whisper /usr/local/bin/
-
-# Its entry in the applications menu, and its icon
-APP=com.linuxwhisper.LinuxWhisper
-sudo cp data/$APP.desktop /usr/share/applications/
-sudo cp data/icons/hicolor/scalable/apps/$APP.svg \
-  /usr/share/icons/hicolor/scalable/apps/
-
-# Refresh the icons
-sudo gtk-update-icon-cache /usr/share/icons/hicolor/</pre>
+    <p>Install it for everyone on the computer. It asks for your password:</p>
+<pre>./build-aux/install.sh</pre>
+    <p>This puts the program in <code>/usr/local</code>, adds it to the applications menu, and adds the rule that lets it paste text on GNOME and KDE and keep its shortcut out of your apps. To remove it again, run <code>./build-aux/uninstall.sh</code>.</p>
 
     <p>Or let <a href="https://github.com/casey/just">just</a> do both:</p>
 <pre>just release
 just install</pre>
 
+    <h3>With an NVIDIA graphics card</h3>
+    <p>Install the CUDA toolkit, then build with GPU support:</p>
+<pre>cargo build --release --features cuda</pre>
+    <p>If <code>nvcc</code> refuses your compiler version (CUDA 13 with GCC 16 on Fedora 44, for example), install <code>gcc15-c++</code> and build with <code>NVCC_CCBIN=/usr/bin/g++-15</code> in front of the command.</p>
+
     <h3>The first start</h3>
-    <p>Linux Whisper asks to download a Whisper model. You can choose another model size in Preferences at any time.</p>
+    <p>Linux Whisper asks to download a Whisper model. You can choose another model size at any time, in Preferences or in the window.</p>
+    <p>Press <code>Super+Shift+Space</code> to start speaking and again to stop. To use other keys, click the shortcut in Preferences and press the ones you want. Your words appear where your cursor is as you speak, and when you stop, the text is on the clipboard too.</p>
+    <p>If you speak more than one language, tick them in Preferences under Languages You Speak. Switching language between sentences works best with the Small model or larger.</p>
+    <p>On GNOME there is no tray icon unless you add the AppIndicator extension, so Linux Whisper opens its window instead. Closing the window keeps it running, so the hotkey keeps working.</p>
   </section>
 
   <section id="security">
     <h2><span>06</span>Security</h2>
-    <p>A security audit covered all six crates of the code and the build pipeline. It found the project clean and safe to distribute.</p>
+    <p>A security audit covered all seven crates of the code and the build pipeline. It found the project clean and safe to distribute.</p>
     <div class="entries">
       <article><h3>No unsafe code</h3><p>There is no <code>unsafe</code> block anywhere in the code. Whisper is called through the safe whisper-rs bindings.</p></article>
       <article><h3>Nothing is sent out</h3><p>No telemetry, analytics or tracking. The only download is the model, over HTTPS from Hugging Face. Your transcripts never leave your computer.</p></article>
       <article><h3>Checked downloads</h3><p>A downloaded model is compared with its known SHA-256 hash. A damaged or altered file is rejected.</p></article>
       <article><h3>No command injection</h3><p>Other programs are started with safe arguments and get their input through a pipe. What you say or type is never put into a shell command.</p></article>
-      <article><h3>Not a keylogger</h3><p>The hotkey listener watches only for the hotkey you set. It does not record, store or send any other key.</p></article>
+      <article><h3>Not a keylogger</h3><p>The hotkey listener watches only for the shortcut you set, and whether a key like Ctrl is held, so dictated words are not typed as shortcuts. To keep the shortcut out of your apps it passes every other key straight on, and it never records, stores or sends any of them.</p></article>
       <article><h3>Pinned build tools</h3><p>Every build step on GitHub is pinned to an exact commit and checked. No unpinned code from others.</p></article>
     </div>
     <p>The audit looked for: back doors, data leaving the computer, stolen credentials, misuse of files, gaining extra rights, unsafe calls into other code, command injection, script injection (XSS), the supply chain of the dependencies, and the build pipeline.</p>

@@ -16,20 +16,21 @@
     </p>
     <p>Features include:</p>
     <ul>
-      <li>System-wide hotkey-triggered dictation with auto-paste</li>
-      <li>Audio file transcription (WAV, MP3, OGG, M4A, FLAC, Opus)</li>
+      <li>System-wide dictation shortcut with auto-paste; the shortcut's keys are kept out of your apps</li>
+      <li>Audio file transcription (WAV, MP3, OGG, M4A, OPUS, FLAC, MP4)</li>
       <li>Multiple Whisper model sizes from Tiny to Large</li>
       <li>Export to TXT, SRT, VTT, and CSV formats</li>
       <li>Full-text search across transcripts</li>
-      <li>Support for 50+ languages</li>
+      <li>Support for 50+ languages, detected per sentence among the languages you speak</li>
       <li>Native GTK4/libadwaita interface following GNOME HIG</li>
     </ul>
   </description>
 
   <launchable type="desktop-id">com.linuxwhisper.LinuxWhisper.desktop</launchable>
 
-  <url type="homepage">https://github.com/linuxwhisper/linux-whisper</url>
-  <url type="bugtracker">https://github.com/linuxwhisper/linux-whisper/issues</url>
+  <url type="homepage">https://kwap.io/linux-whisper/</url>
+  <url type="bugtracker">https://github.com/kwap/linux-whisper/issues</url>
+  <url type="vcs-browser">https://github.com/kwap/linux-whisper</url>
 
   <developer id="com.linuxwhisper">
     <name>Linux Whisper Contributors</name>
@@ -38,6 +39,27 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.7" date="2026-10-19">
+      <description>
+        <p>Dictation like on a phone, and fixes for the install instructions and for features that did not work.</p>
+        <ul>
+          <li>Words are typed where your cursor is while you speak, and corrected as recognition improves, like dictation on a phone</li>
+          <li>Builds from source on Ubuntu, Debian, Fedora and Arch without extra steps: no OpenSSL or libclang needed, CUDA is optional</li>
+          <li>Works without a tray icon (stock GNOME): the window opens and the hotkey works</li>
+          <li>First start asks to download a speech model; models are used as soon as they are downloaded</li>
+          <li>Auto-paste works on GNOME and KDE (Wayland), not just wlroots desktops</li>
+          <li>Opus files and stereo M4A/MP4 files are transcribed correctly</li>
+          <li>Language detection follows a switch of language between sentences, also with an accent; choose the languages you speak in Preferences</li>
+          <li>The shortcut's keys are kept out of the app you are using: no stray space from Super+Shift+Space</li>
+          <li>Change the shortcut by pressing the keys you want</li>
+          <li>Redesigned window: click the pigeon to dictate, its eye glowing red while recording as in the tray; transcripts as cards</li>
+          <li>The pigeon is back as the app icon</li>
+          <li>The AI formatter downloads, loads and formats text</li>
+          <li>Every Preferences setting is saved and applied; Record, model choice and drag and drop work in the window</li>
+          <li>Letter hotkeys (e.g. Ctrl+Alt+D) bind the right key; keyboards connected later are picked up</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.9.6" date="2026-03-11">
       <description>
         <p>Website restyled with accordion sections, README with pigeon icon and badges, .deb build fix, i18n test stability fix. Security audit, SHA-256 model integrity verification, CI/CD supply chain hardening.</p>
